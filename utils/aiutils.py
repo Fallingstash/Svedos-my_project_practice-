@@ -19,7 +19,7 @@ class AIRequestError(Exception):
 def get_client():
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
-        api_key=os.getenv("API_KEY"),
+        api_key=os.getenv("API_KEY") or st.secrets.get("API_KEY"),
     )
 
 
