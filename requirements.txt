@@ -1,0 +1,8 @@
+streamlit
+librosa
+numpy
+scipy
+matplotlib
+pyloudnorm
+openai
+python-dotenv
