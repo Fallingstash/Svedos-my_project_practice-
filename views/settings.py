@@ -5,6 +5,8 @@ ANALYSIS_MODE_LABELS = {
     "master": "Анализировать мастер-трек",
     "stems": "Анализировать стемы (Бит + Вокал)",
 }
+MAX_UPLOAD_SIZE_MB = 30
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
 def render_settings(segments):
@@ -21,19 +23,31 @@ def render_settings(segments):
         key="analysis_mode_selector",
     )
     new_track = st.file_uploader(
-        "Новая версия трека", type=["mp3", "wav"], key="new_track"
+        "Новая версия трека",
+        type=["mp3", "wav"],
+        key="new_track",
+        max_upload_size=MAX_UPLOAD_SIZE_MB,
     )
     new_reference = st.file_uploader(
-        "Новый референс", type=["mp3", "wav"], key="new_ref"
+        "Новый референс",
+        type=["mp3", "wav"],
+        key="new_ref",
+        max_upload_size=MAX_UPLOAD_SIZE_MB,
     )
     new_beat = None
     new_vocal = None
     if analysis_mode == "stems":
         new_beat = st.file_uploader(
-            "Стем бита", type=["mp3", "wav"], key="settings_beat"
+            "Стем бита",
+            type=["mp3", "wav"],
+            key="settings_beat",
+            max_upload_size=MAX_UPLOAD_SIZE_MB,
         )
         new_vocal = st.file_uploader(
-            "Стем вокала", type=["mp3", "wav"], key="settings_vocal"
+            "Стем вокала",
+            type=["mp3", "wav"],
+            key="settings_vocal",
+            max_upload_size=MAX_UPLOAD_SIZE_MB,
         )
     apply_changes = st.button(
         "✅ Применить и вернуться в чат",

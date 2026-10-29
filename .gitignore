@@ -1,5 +1,7 @@
 .env
 venv/
-history/
+.venv/
 __pycache__/
-*.py[cod]
+*.pyc
+history/
+.streamlit/secrets.toml

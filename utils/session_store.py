@@ -15,6 +15,7 @@ def _connect():
         """
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
+            user_id TEXT,
             track_name TEXT NOT NULL,
             display_name TEXT NOT NULL DEFAULT '',
             genre TEXT NOT NULL,
@@ -34,6 +35,7 @@ def _connect():
         row["name"] for row in connection.execute("PRAGMA table_info(sessions)")
     }
     for column_name, declaration in (
+        ("user_id", "TEXT"),
         ("display_name", "TEXT NOT NULL DEFAULT ''"),
         ("analysis_mode", "TEXT NOT NULL DEFAULT 'master'"),
         ("beat_path", "TEXT"),
@@ -51,15 +53,16 @@ def save_session(session):
     now = datetime.now().astimezone().isoformat(timespec="seconds")
     connection = _connect()
     try:
-        connection.execute(
+        cursor = connection.execute(
             """
             INSERT INTO sessions (
-                id, track_name, display_name, genre, created_at, updated_at, track_path,
-                reference_path, analysis_mode, beat_path, vocal_path,
+                id, user_id, track_name, display_name, genre, created_at, updated_at,
+                track_path, reference_path, analysis_mode, beat_path, vocal_path,
                 segments_json, chat_history_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                user_id = excluded.user_id,
                 track_name = excluded.track_name,
                 display_name = excluded.display_name,
                 genre = excluded.genre,
@@ -71,9 +74,11 @@ def save_session(session):
                 vocal_path = excluded.vocal_path,
                 segments_json = excluded.segments_json,
                 chat_history_json = excluded.chat_history_json
+            WHERE sessions.user_id = excluded.user_id
             """,
             (
                 session["id"],
+                session["user_id"],
                 session["track_name"],
                 session.get("display_name", session["track_name"]),
                 session["genre"],
@@ -88,12 +93,14 @@ def save_session(session):
                 json.dumps(session.get("chat_history", []), ensure_ascii=False),
             ),
         )
+        if cursor.rowcount == 0:
+            raise ValueError("Нельзя сохранить сессию другого пользователя.")
         connection.commit()
     finally:
         connection.close()
 
 
-def list_sessions():
+def list_sessions(user_id):
     connection = _connect()
     try:
         rows = connection.execute(
@@ -102,8 +109,10 @@ def list_sessions():
                    track_path, reference_path, analysis_mode, beat_path,
                    vocal_path, segments_json, chat_history_json
             FROM sessions
+            WHERE user_id = ?
             ORDER BY updated_at DESC
-            """
+            """,
+            (user_id,),
         ).fetchall()
     finally:
         connection.close()
@@ -133,12 +142,12 @@ def list_sessions():
     return sessions
 
 
-def load_session(session_id):
+def load_session(session_id, user_id):
     connection = _connect()
     try:
         row = connection.execute(
-            "SELECT * FROM sessions WHERE id = ?",
-            (session_id,),
+            "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
         ).fetchone()
     finally:
         connection.close()
@@ -163,7 +172,7 @@ def load_session(session_id):
     }
 
 
-def rename_session(session_id, display_name):
+def rename_session(session_id, user_id, display_name):
     normalized_name = display_name.strip()
     if not normalized_name:
         raise ValueError("Название сессии не может быть пустым.")
@@ -171,8 +180,8 @@ def rename_session(session_id, display_name):
     connection = _connect()
     try:
         cursor = connection.execute(
-            "UPDATE sessions SET display_name = ? WHERE id = ?",
-            (normalized_name, session_id),
+            "UPDATE sessions SET display_name = ? WHERE id = ? AND user_id = ?",
+            (normalized_name, session_id, user_id),
         )
         if cursor.rowcount == 0:
             raise ValueError("Сессия не найдена.")

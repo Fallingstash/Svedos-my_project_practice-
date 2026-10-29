@@ -16,7 +16,7 @@ def _session_label(session):
 
 
 def _activate_session(session_id):
-    session = load_session(session_id)
+    session = load_session(session_id, st.session_state.user_id)
     if session is None:
         st.error("Не удалось найти выбранную сессию.")
         return
@@ -78,6 +78,7 @@ def _start_new_session():
         "pendingai_payload": None,
         "pendingai_error": None,
         "renaming_session_id": None,
+        "chat_upload_generation": 0,
     }
     for key, value in defaults.items():
         st.session_state[key] = value.copy() if isinstance(value, list) else value
@@ -93,7 +94,7 @@ def render_sidebar():
         if st.button("➕ Новая сессия", use_container_width=True):
             _start_new_session()
 
-        for session in list_sessions():
+        for session in list_sessions(st.session_state.user_id):
             is_active = session["id"] == st.session_state.session_id
             label = _session_label(session)
             session_name = session["display_name"] or session["track_name"]
@@ -120,7 +121,11 @@ def render_sidebar():
                     save_name = st.form_submit_button("Сохранить")
                 if save_name:
                     try:
-                        rename_session(session["id"], edited_name)
+                        rename_session(
+                            session["id"],
+                            st.session_state.user_id,
+                            edited_name,
+                        )
                     except ValueError as error:
                         st.error(str(error))
                     else:

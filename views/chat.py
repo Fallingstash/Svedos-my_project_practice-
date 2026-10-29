@@ -48,15 +48,22 @@ def render_chat(
             return None
         _process_pending_request(chat_history, process_pending_request, save_history)
 
-    with st.form("chat_form", clear_on_submit=True):
-        col_input, col_settings = st.columns([9, 1])
-        user_question = col_input.text_input(
-            "Вопрос...", label_visibility="collapsed"
+    col_form, col_settings = st.columns([9, 1], vertical_alignment="bottom")
+    with col_form:
+        with st.form("chat_form", clear_on_submit=True):
+            user_question = st.text_input(
+                "Вопрос...", label_visibility="collapsed"
+            )
+            send_clicked = st.form_submit_button(
+                "Отправить",
+                use_container_width=True,
+            )
+    with col_settings:
+        settings_clicked = st.button(
+            "⚙️",
+            key="chat_settings_button",
+            use_container_width=True,
         )
-        settings_clicked = col_settings.form_submit_button(
-            "⚙️", use_container_width=True
-        )
-        send_clicked = st.form_submit_button("Отправить", use_container_width=True)
 
     consolidate_clicked = st.button(
         "📘 Закрепить знания",

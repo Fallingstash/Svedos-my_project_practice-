@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 
 import streamlit as st
@@ -15,6 +16,7 @@ from views.chat import render_chat
 from views.graph import render_graph
 from views.onboarding import render_onboarding
 from views.settings import render_settings
+from views.settings import MAX_UPLOAD_SIZE_BYTES
 from views.sidebar import render_sidebar
 
 
@@ -38,15 +40,21 @@ SESSION_DEFAULTS = {
     "track_name": "",
     "display_name": "",
     "session_created_at": None,
+    "user_id": None,
     "pendingai_request": False,
     "pendingai_payload": None,
     "pendingai_error": None,
+    "last_ai_request_at": None,
+    "chat_upload_generation": 0,
+    "renaming_session_id": None,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = (
             default.copy() if isinstance(default, list) else default
         )
+if not st.session_state.user_id:
+    st.session_state.user_id = str(uuid4())
 
 st.markdown(
     """
@@ -69,6 +77,13 @@ def analysis_segments():
 
 
 def save_versioned_upload(uploaded_file, prefix):
+    extension = Path(uploaded_file.name).suffix.lower()
+    if extension not in {".mp3", ".wav"}:
+        raise ValueError("Поддерживаются только файлы MP3 и WAV.")
+    file_buffer = uploaded_file.getbuffer()
+    if file_buffer.nbytes > MAX_UPLOAD_SIZE_BYTES:
+        raise ValueError("Максимальный размер аудиофайла — 30 МБ.")
+
     if not st.session_state.session_id:
         st.session_state.session_id = str(uuid4())
         st.session_state.session_created_at = (
@@ -80,16 +95,13 @@ def save_versioned_upload(uploaded_file, prefix):
         / st.session_state.session_id
     )
     session_directory.mkdir(parents=True, exist_ok=True)
-    extension = Path(uploaded_file.name).suffix.lower()
-    if extension not in {".mp3", ".wav"}:
-        raise ValueError("Поддерживаются только файлы MP3 и WAV.")
 
     version = 1
     while (session_directory / f"{prefix}_v{version}{extension}").exists():
         version += 1
     file_path = session_directory / f"{prefix}_v{version}{extension}"
     with file_path.open("wb") as audio_file:
-        audio_file.write(uploaded_file.getbuffer())
+        audio_file.write(file_buffer)
     return str(file_path)
 
 
@@ -99,6 +111,7 @@ def persist_current_session():
     save_session(
         {
             "id": st.session_state.session_id,
+            "user_id": st.session_state.user_id,
             "track_name": st.session_state.track_name,
             "display_name": st.session_state.display_name or st.session_state.track_name,
             "genre": st.session_state.genre,
@@ -253,6 +266,13 @@ def process_pending_ai_request(payload):
 
 
 def queue_ai_request(question, kind, previous_track_path=None):
+    now = monotonic()
+    last_request_at = st.session_state.last_ai_request_at
+    if last_request_at is not None and now - last_request_at < 5:
+        st.session_state.pendingai_error = "Не так быстро!"
+        return False
+
+    st.session_state.last_ai_request_at = now
     st.session_state.chat_history.append({"role": "user", "content": question})
     st.session_state.pendingai_payload = {
         "kind": kind,
@@ -262,6 +282,7 @@ def queue_ai_request(question, kind, previous_track_path=None):
     st.session_state.pendingai_request = True
     st.session_state.view_mode = "chat"
     persist_current_session()
+    return True
 
 
 render_sidebar()

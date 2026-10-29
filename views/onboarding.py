@@ -1,6 +1,6 @@
 import streamlit as st
 
-from views.settings import ANALYSIS_MODE_LABELS
+from views.settings import ANALYSIS_MODE_LABELS, MAX_UPLOAD_SIZE_MB
 
 
 def render_onboarding(segments):
@@ -21,17 +21,25 @@ def render_onboarding(segments):
         ref_file = None
         if analysis_mode == "master":
             uploaded_file = st.file_uploader(
-                "Загрузите мастер-трек", type=["mp3", "wav"]
+                "Загрузите мастер-трек",
+                type=["mp3", "wav"],
+                max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
             ref_file = st.file_uploader(
-                "Загрузите референс (опционально)", type=["mp3", "wav"]
+                "Загрузите референс (опционально)",
+                type=["mp3", "wav"],
+                max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
         else:
             beat_file = st.file_uploader(
-                "Загрузите стем бита", type=["mp3", "wav"]
+                "Загрузите стем бита",
+                type=["mp3", "wav"],
+                max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
             vocal_file = st.file_uploader(
-                "Загрузите стем вокала", type=["mp3", "wav"]
+                "Загрузите стем вокала",
+                type=["mp3", "wav"],
+                max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
         genre = st.selectbox("Жанр", ["Рэп", "Хип-Хоп", "Поп", "Лоу-фай"])
         analyze_clicked = st.form_submit_button("🚀 Начать анализ", type="primary")

@@ -1,3 +1,12 @@
+
+librosa
+numpy
+scipy
+matplotlib
+pyloudnorm
+openai
+python-dotenv
+=======
 streamlit
 librosa
 numpy
@@ -6,3 +15,4 @@ matplotlib
 pyloudnorm
 openai
 python-dotenv
+>>>>>>> 6a93ad0 (Fix bugs, add privacy isolation and update prompt)
