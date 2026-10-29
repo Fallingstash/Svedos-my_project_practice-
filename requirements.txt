@@ -6,7 +6,6 @@ matplotlib
 pyloudnorm
 openai
 python-dotenv
-=======
 streamlit
 librosa
 numpy
