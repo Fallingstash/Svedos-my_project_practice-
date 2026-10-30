@@ -10,7 +10,12 @@ from utils.aiutils import (
     get_strict_prompt,
     request_ai_response,
 )
-from utils.audioutils import analyzestems, analyze_audio_file, compare_spectra
+from utils.audioutils import (
+    analyzestems,
+    analyze_audio_file,
+    compare_spectra,
+    get_genre_reference_delta,
+)
 from utils.session_store import save_session
 from views.chat import render_chat
 from views.graph import render_graph
@@ -152,8 +157,22 @@ def analyze_current_source():
         stems = analyzestems(beat_path, vocal_path, segments)
         beat_data = stems["beat"]
         vocal_data = stems["vocal"]
+        segment_analyses = [
+            {
+                "name": beat_segment["name"],
+                "start": beat_segment["start"],
+                "end": beat_segment["end"],
+                "beat": beat_segment,
+                "vocal": vocal_segment,
+            }
+            for beat_segment, vocal_segment in zip(
+                beat_data["segment_analyses"],
+                vocal_data["segment_analyses"],
+            )
+        ]
         combined_data = {
             **beat_data,
+            "segment_analyses": segment_analyses,
             "request_str": (
                 "Бит:\n"
                 f"{beat_data['request_str']}\n"
@@ -230,6 +249,8 @@ def request_analysis(
         reference_delta,
         analysis_mode,
         stem_context,
+        audio_data.get("segment_analyses"),
+        get_genre_reference_delta(audio_data, st.session_state.genre),
     )
     return request_ai_response(system_prompt, user_prompt, chat_history)
 
@@ -262,6 +283,7 @@ def process_pending_ai_request(payload):
         st.session_state.chat_history[:-1],
         reference_delta,
         stem_data,
+        st.session_state.genre,
     )
 
 

@@ -1,6 +1,18 @@
 import matplotlib.pyplot as plt
 import streamlit as st
 
+from utils.audioutils import get_genre_reference_curve
+
+
+def _render_metric_grid(metrics, columns=3):
+    for offset in range(0, len(metrics), columns):
+        metric_columns = st.columns(columns)
+        for column, (label, value) in zip(
+            metric_columns,
+            metrics[offset : offset + columns],
+        ):
+            column.metric(label, value)
+
 
 def render_graph(
     audio_data,
@@ -8,6 +20,7 @@ def render_graph(
     previous_spectrum=None,
     reference_delta="",
     stem_data=None,
+    genre_name=None,
 ):
     with st.container(height=800):
         st.subheader("📊 Спектр трека")
@@ -37,6 +50,19 @@ def render_graph(
                 alpha=0.6,
                 linestyle="-.",
                 label="Референс",
+            )
+        elif genre_name:
+            axis.plot(
+                audio_data["frequencies"],
+                get_genre_reference_curve(
+                    genre_name,
+                    audio_data["frequencies"],
+                ),
+                color="goldenrod",
+                alpha=0.9,
+                linewidth=1.2,
+                linestyle=":",
+                label=f"Жанровый ориентир: {genre_name}",
             )
 
         if previous_spectrum is not None:
@@ -71,16 +97,18 @@ def render_graph(
                 ("Вокал", stem_data["vocal"]),
             ):
                 st.markdown(f"**{label}**")
-                col_lufs, col_peak, col_width, col_plr = st.columns(4)
-                col_lufs.metric("LUFS", f"{stem['loudness']:.1f}")
-                col_peak.metric("True Peak", f"{stem['true_peak_db']:.1f} dBTP")
-                col_width.metric(
-                    "Стерео-ширина",
-                    f"{stem['stereo_width_pct']:.1f}%",
-                )
-                col_plr.metric(
-                    "PLR",
-                    f"{stem['plr']:.1f} дБ" if stem["plr"] is not None else "—",
+                _render_metric_grid(
+                    [
+                        ("LUFS", f"{stem['loudness']:.1f}"),
+                        ("True Peak", f"{stem['true_peak_db']:.1f} dBTP"),
+                        ("Стерео-ширина", f"{stem['stereo_width_pct']:.1f}%"),
+                        (
+                            "PLR",
+                            f"{stem['plr']:.1f} дБ"
+                            if stem["plr"] is not None
+                            else "—",
+                        ),
+                    ]
                 )
             st.caption(
                 "Разброс LUFS за 3-секундные окна: "
@@ -88,20 +116,64 @@ def render_graph(
                 f"вокал — {_format_variance(stem_data['vocal'])}"
             )
         else:
-            st.metric("Громкость (LUFS)", f"{audio_data['loudness']:.1f}")
-            st.metric("Пиковый уровень (dBFS)", f"{audio_data['max_peak_db']:.1f}")
-            st.metric("True Peak (dBTP)", f"{audio_data['true_peak_db']:.1f}")
-            st.metric("Crest Factor", f"{audio_data['crest_factor']:.1f} дБ")
-            st.metric("Стерео-ширина", f"{audio_data['stereo_width_pct']:.1f}%")
-            if audio_data["plr"] is not None:
-                st.metric("PLR", f"{audio_data['plr']:.1f} дБ")
-            variance = audio_data["short_term_lufs_variance"]
-            st.metric(
-                "Разброс LUFS (3 сек.)",
-                f"{variance:.2f} дБ²"
-                if variance is not None
-                else "Недостаточно длины",
+            _render_metric_grid(
+                [
+                    ("Громкость (LUFS)", f"{audio_data['loudness']:.1f}"),
+                    ("Пиковый уровень (dBFS)", f"{audio_data['max_peak_db']:.1f}"),
+                    ("True Peak (dBTP)", f"{audio_data['true_peak_db']:.1f}"),
+                    ("Crest Factor", f"{audio_data['crest_factor']:.1f} дБ"),
+                    ("Стерео-ширина", f"{audio_data['stereo_width_pct']:.1f}%"),
+                    (
+                        "PLR",
+                        f"{audio_data['plr']:.1f} дБ"
+                        if audio_data["plr"] is not None
+                        else "—",
+                    ),
+                    (
+                        "Разброс LUFS (3 сек.)",
+                        f"{audio_data['short_term_lufs_variance']:.2f} дБ²"
+                        if audio_data["short_term_lufs_variance"] is not None
+                        else "Недостаточно длины",
+                    ),
+                ]
             )
+
+        if audio_data.get("segment_analyses"):
+            with st.expander("Метрики по сегментам"):
+                for segment in audio_data["segment_analyses"]:
+                    st.markdown(
+                        f"**{segment['name']} "
+                        f"({segment['start']:g}–{segment['end']:g} сек.)**"
+                    )
+                    segment_sources = (
+                        (
+                            ("Бит", segment["beat"]),
+                            ("Вокал", segment["vocal"]),
+                        )
+                        if "beat" in segment and "vocal" in segment
+                        else (("", segment),)
+                    )
+                    for source_name, metrics in segment_sources:
+                        if source_name:
+                            st.caption(source_name)
+                        peaks = ", ".join(
+                            f"{frequency:.0f} Гц"
+                            for frequency, _ in metrics["top_peaks"]
+                        ) or "не обнаружены"
+                        _render_metric_grid(
+                            [
+                                ("Топ-3 пика", peaks),
+                                ("LUFS", f"{metrics['loudness']:.1f}"),
+                                (
+                                    "True Peak",
+                                    f"{metrics['true_peak_db']:.1f} dBTP",
+                                ),
+                                (
+                                    "Crest Factor",
+                                    f"{metrics['crest_factor']:.1f} дБ",
+                                ),
+                            ]
+                        )
 
 
 def _format_variance(audio_data):

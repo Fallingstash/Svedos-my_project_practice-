@@ -28,31 +28,145 @@ def _format_energy(spectrum, frequencies, lower, upper):
     return f"{np.mean(spectrum[mask]):.1f} дБ"
 
 
-def _prepare_audio(audio, sample_rate, segments):
-    duration = audio.shape[-1] / sample_rate
-    labels = []
-    if segments:
-        start_end_samples = []
-        for name, start, end in segments:
-            if start < 0 or end <= start or start >= duration:
-                raise ValueError(
-                    f"Исправь таймкоды сегмента «{name}»: начало должно быть "
-                    f"раньше длительности трека ({duration:.1f} сек.), а конец — "
-                    "позже начала."
-                )
-            clipped_end = min(end, duration)
-            start_sample = int(start * sample_rate)
-            end_sample = min(int(clipped_end * sample_rate), audio.shape[-1])
-            if end_sample <= start_sample:
-                raise ValueError(
-                    f"Сегмент «{name}» слишком короткий после ограничения "
-                    f"длительностью трека ({duration:.1f} сек.)."
-                )
-            start_end_samples.append((start_sample, end_sample))
-            labels.append(f"«{name}» ({start:g}-{clipped_end:g} сек.)")
+def get_genre_reference_curve(genre, frequencies):
+    normalized_genre = str(genre).casefold().replace("-", "").replace(" ", "")
+    if normalized_genre in {"рэп", "хипхоп", "hiphop"}:
+        anchors = (
+            (20, -3),
+            (40, 1),
+            (60, 3),
+            (80, 2),
+            (150, 0),
+            (250, -2),
+            (350, -1),
+            (500, 0),
+            (1000, 0),
+            (4000, 0),
+            (8000, 0),
+            (10000, -0.5),
+            (16000, -2),
+        )
+    elif normalized_genre == "поп":
+        anchors = (
+            (20, -2),
+            (40, -1),
+            (80, 0),
+            (200, 0),
+            (500, 0),
+            (1000, 0),
+            (2000, 1.5),
+            (3000, 2),
+            (4000, 1.5),
+            (6000, 0),
+            (10000, -0.5),
+            (16000, -1),
+        )
+    elif normalized_genre in {"лоуфай", "lofi"}:
+        anchors = (
+            (20, -1),
+            (40, 1),
+            (80, 2),
+            (160, 1),
+            (300, 0),
+            (1000, 0),
+            (3000, -1),
+            (6000, -2),
+            (8000, -3),
+            (10000, -7),
+            (16000, -14),
+        )
+    else:
+        anchors = (
+            (20, 0),
+            (20000, 0),
+        )
 
+    anchor_frequencies = np.asarray([point[0] for point in anchors], dtype=float)
+    anchor_levels = np.asarray([point[1] for point in anchors], dtype=float)
+    safe_frequencies = np.maximum(np.asarray(frequencies, dtype=float), 1.0)
+    curve = np.interp(
+        np.log10(safe_frequencies),
+        np.log10(anchor_frequencies),
+        anchor_levels,
+    )
+    return curve - np.max(curve)
+
+
+def get_genre_reference_delta(audio_data, genre):
+    user_spectrum = np.asarray(audio_data["spectrum"], dtype=float)
+    frequencies = np.asarray(audio_data["frequencies"], dtype=float)
+    reference_curve = get_genre_reference_curve(genre, frequencies)
+    band_deltas = []
+    for lower, upper, label in FREQUENCY_BANDS:
+        mask = (frequencies >= lower) & (frequencies < upper)
+        if not np.any(mask):
+            continue
+        delta_db = float(np.mean(user_spectrum[mask] - reference_curve[mask]))
+        if abs(delta_db) > 3:
+            direction = "выше" if delta_db > 0 else "ниже"
+            band_deltas.append(
+                f"{label}: энергия {direction} жанрового ориентира "
+                f"примерно на {abs(delta_db):.1f} дБ"
+            )
+
+    if not band_deltas:
+        return (
+            f"Для жанра «{genre}» ни в одной анализируемой полосе "
+            "отклонение от жанрового ориентира не превышает 3 дБ."
+        )
+    return (
+        f"Сравнение с ориентировочной кривой жанра «{genre}» "
+        "(разница указана для внутренних рекомендаций):\n"
+        + "\n".join(f"- {delta}" for delta in band_deltas)
+    )
+
+
+def _extract_segments(audio, sample_rate, segments):
+    duration = audio.shape[-1] / sample_rate
+    extracted_segments = []
+    for name, start, end in segments:
+        if start < 0 or end <= start or start >= duration:
+            raise ValueError(
+                f"Исправь таймкоды сегмента «{name}»: начало должно быть "
+                f"раньше длительности трека ({duration:.1f} сек.), а конец — "
+                "позже начала."
+            )
+        clipped_end = min(end, duration)
+        start_sample = int(start * sample_rate)
+        end_sample = min(int(clipped_end * sample_rate), audio.shape[-1])
+        segment_audio = audio[..., start_sample:end_sample]
+        if segment_audio.shape[-1] <= 0:
+            raise ValueError(
+                f"Сегмент «{name}» слишком короткий после ограничения "
+                f"длительностью трека ({duration:.1f} сек.)."
+            )
+        if segment_audio.shape[-1] < int(sample_rate * 0.4):
+            raise ValueError(
+                f"Сегмент «{name}» слишком короткий для анализа "
+                "(менее 0,4 сек.)."
+            )
+        extracted_segments.append(
+            {
+                "name": name,
+                "start": float(start),
+                "end": float(clipped_end),
+                "audio": segment_audio,
+            }
+        )
+
+    return extracted_segments
+
+
+def _prepare_audio(audio, sample_rate, segments):
+    extracted_segments = _extract_segments(audio, sample_rate, segments)
+    if extracted_segments:
+        labels = [
+            f"«{segment['name']}» "
+            f"({segment['start']:g}-{segment['end']:g} сек.)"
+            for segment in extracted_segments
+        ]
         audio = np.concatenate(
-            [audio[..., start:end] for start, end in start_end_samples],
+            [segment["audio"] for segment in extracted_segments],
             axis=-1,
         )
         context = "Анализ выбранных фрагментов: " + ", ".join(labels) + "."
@@ -103,6 +217,7 @@ def _short_term_lufs(mono_audio, sample_rate):
 
 
 def _analyze_audio(audio, sample_rate, segments=()):
+    source_audio = audio
     selected_audio, analysis_context = _prepare_audio(audio, sample_rate, segments)
     stereo_width_pct, stereo_width_db = _stereo_metrics(selected_audio)
     mono_audio = librosa.to_mono(selected_audio) if selected_audio.ndim == 2 else selected_audio
@@ -182,7 +297,7 @@ def _analyze_audio(audio, sample_rate, segments=()):
         ),
     ]
 
-    return {
+    result = {
         "spectrum": normalized_spectrum,
         "absolute_spectrum": absolute_spectrum,
         "frequencies": frequencies,
@@ -199,7 +314,26 @@ def _analyze_audio(audio, sample_rate, segments=()):
         "short_term_lufs_variance": short_term_lufs_variance,
         "top_peaks": top_peaks,
         "analysis_context": analysis_context,
+        "segment_analyses": [],
     }
+    if segments:
+        for segment in _extract_segments(source_audio, sample_rate, segments):
+            segment_result = _analyze_audio(
+                segment["audio"],
+                sample_rate,
+            )
+            result["segment_analyses"].append(
+                {
+                    "name": segment["name"],
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "top_peaks": segment_result["top_peaks"],
+                    "loudness": segment_result["loudness"],
+                    "true_peak_db": segment_result["true_peak_db"],
+                    "crest_factor": segment_result["crest_factor"],
+                }
+            )
+    return result
 
 
 @st.cache_data(show_spinner=False)

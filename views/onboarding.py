@@ -1,5 +1,6 @@
 import streamlit as st
 
+from views.segment_builder import render_segment_builder
 from views.settings import ANALYSIS_MODE_LABELS, MAX_UPLOAD_SIZE_MB
 
 
@@ -45,31 +46,8 @@ def render_onboarding(segments):
         analyze_clicked = st.form_submit_button("🚀 Начать анализ", type="primary")
 
     st.subheader("Сегменты трека (опционально)")
-    with st.form("start_segment_form", clear_on_submit=True):
-        segment_name = st.text_input("Название", "Куплет")
-        col_start, col_end = st.columns(2)
-        start_time = col_start.number_input("Начало (сек)", min_value=0, value=10)
-        end_time = col_end.number_input("Конец (сек)", min_value=1, value=30)
-        add_segment = st.form_submit_button("Добавить сегмент")
-
-    if add_segment:
-        if end_time <= start_time:
-            st.error("Время окончания должно быть позже времени начала.")
-            return None
-        segments.append(
-            {"name": segment_name, "start": start_time, "end": end_time}
-        )
+    if render_segment_builder(segments, "onboarding"):
         st.rerun()
-
-    if segments:
-        for index, segment in enumerate(segments):
-            col_description, col_delete = st.columns([4, 1])
-            col_description.write(
-                f"- {segment['name']}: {segment['start']} - {segment['end']} сек."
-            )
-            if col_delete.button("❌", key=f"start_del_{index}"):
-                segments.pop(index)
-                st.rerun()
 
     if analyze_clicked and analysis_mode == "master" and uploaded_file is not None:
         return {
