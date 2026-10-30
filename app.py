@@ -237,6 +237,19 @@ def request_analysis(
     new_version=False,
 ):
     analysis_mode = st.session_state.analysis_mode
+    analysis_context = audio_data["analysis_context"]
+    if new_version:
+        analysis_context = (
+            "Я только что загрузил НОВУЮ версию трека после правок. "
+            "Вот новые данные:\n"
+            f"Пики: {audio_data['request_str']}\n"
+            f"Баланс частот: {audio_data['bands_str']}\n"
+            f"Динамика: {audio_data['dynamics_str']}\n"
+            "Используй измерения текущего файла как "
+            "основные, не подменяй их предыдущими значениями из истории и не "
+            "повторяй старые советы без подтверждения новыми данными.\n"
+            + analysis_context
+        )
     stem_context = None
     if stem_data is not None:
         stem_context = (
@@ -244,20 +257,19 @@ def request_analysis(
             f"{stem_data['conflict_str']}"
         )
     system_prompt, user_prompt = get_strict_prompt(
-        question,
-        st.session_state.segments,
-        st.session_state.genre,
-        audio_data["request_str"],
-        audio_data["bands_str"],
-        audio_data["dynamics_str"],
-        audio_data["analysis_context"],
-        reference_delta,
-        analysis_mode,
-        stem_context,
-        audio_data.get("segment_analyses"),
-        get_genre_reference_delta(audio_data, st.session_state.genre),
-        st.session_state.vibe_description,
-        new_version,
+        question=question,
+        segments_list=st.session_state.segments,
+        genre_name=st.session_state.genre,
+        request_data=audio_data["request_str"],
+        bands_data=audio_data["bands_str"],
+        dynamics_data=audio_data["dynamics_str"],
+        analysis_context=analysis_context,
+        reference_delta=reference_delta,
+        analysis_mode=analysis_mode,
+        stem_data=stem_context,
+        segment_data=audio_data.get("segment_analyses"),
+        genre_delta=get_genre_reference_delta(audio_data, st.session_state.genre),
+        vibe_description=st.session_state.vibe_description,
     )
     return request_ai_response(system_prompt, user_prompt, chat_history)
 

@@ -80,7 +80,6 @@ def get_strict_prompt(
     segment_data=None,
     genre_delta="",
     vibe_description="",
-    new_version=False,
 ):
     segment_text = ""
     if segments_list:
@@ -176,23 +175,10 @@ Decay, Room Size и подобные. Вместо High Pass или Low Cut пи
 {stem_instruction}
 {segment_text}"""
 
-    new_version_context = ""
-    if new_version:
-        new_version_context = f"""
-Я только что загрузил НОВУЮ версию трека после правок. Вот новые данные:
-Пики: {request_data}
-Баланс частот: {bands_data}
-Динамика: {dynamics_data}
-Опирайся на эти свежие измерения текущего файла. Предыдущие ответы в истории — это
-только контекст диалога, не используй старые измерения вместо новых и не повторяй
-прежние советы, если текущие данные и комментарий пользователя их не подтверждают.
-"""
-
     user_prompt = f"""
 Контекст анализа: {analysis_context}
 Режим анализа: {"стемы (бит + вокал)" if analysis_mode == "stems" else "мастер-трек"}.
 
-{new_version_context}
 Вот данные о самых громких пиках:
 {request_data}
 
