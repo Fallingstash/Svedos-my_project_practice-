@@ -287,7 +287,6 @@ def process_pending_ai_request(payload):
         st.session_state.chat_history[:-1],
         reference_delta,
         stem_data,
-        st.session_state.genre,
     )
 
 
