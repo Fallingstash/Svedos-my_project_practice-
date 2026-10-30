@@ -54,6 +54,7 @@ SESSION_DEFAULTS = {
     "last_ai_request_at": None,
     "chat_upload_generation": 0,
     "renaming_session_id": None,
+    "settings_comment_generation": 0,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -233,6 +234,7 @@ def request_analysis(
     chat_history=None,
     reference_delta="",
     stem_data=None,
+    new_version=False,
 ):
     analysis_mode = st.session_state.analysis_mode
     stem_context = None
@@ -255,6 +257,7 @@ def request_analysis(
         audio_data.get("segment_analyses"),
         get_genre_reference_delta(audio_data, st.session_state.genre),
         st.session_state.vibe_description,
+        new_version,
     )
     return request_ai_response(system_prompt, user_prompt, chat_history)
 
@@ -264,33 +267,47 @@ def process_pending_ai_request(payload):
         system_prompt, user_prompt = get_consolidation_prompt(
             st.session_state.genre
         )
-        return request_ai_response(
-            system_prompt,
-            user_prompt,
+        with st.status("ИИ думает...", expanded=False) as status:
+            answer = request_ai_response(
+                system_prompt,
+                user_prompt,
+                st.session_state.chat_history[:-1],
+            )
+            status.update(label="Ответ готов", state="complete", expanded=False)
+        return answer
+
+    with st.status("Слушаю трек...", expanded=True) as status:
+        previous_track_path = payload.get("previous_track_path")
+        if previous_track_path:
+            previous_audio = analyze_audio_file(
+                previous_track_path,
+                analysis_segments(),
+            )
+            st.session_state.old_spectrum = previous_audio["spectrum"]
+            st.session_state.old_frequencies = previous_audio["frequencies"]
+
+        status.update(label="Считаю частоты...", state="running")
+        audio_data, stem_data = analyze_current_source()
+        reference_delta = get_reference_delta(audio_data)
+        status.update(label="ИИ думает...", state="running")
+        answer = request_analysis(
+            payload["question"],
+            audio_data,
             st.session_state.chat_history[:-1],
+            reference_delta,
+            stem_data,
+            payload.get("new_version", False),
         )
-
-    previous_track_path = payload.get("previous_track_path")
-    if previous_track_path:
-        previous_audio = analyze_audio_file(
-            previous_track_path,
-            analysis_segments(),
-        )
-        st.session_state.old_spectrum = previous_audio["spectrum"]
-        st.session_state.old_frequencies = previous_audio["frequencies"]
-
-    audio_data, stem_data = analyze_current_source()
-    reference_delta = get_reference_delta(audio_data)
-    return request_analysis(
-        payload["question"],
-        audio_data,
-        st.session_state.chat_history[:-1],
-        reference_delta,
-        stem_data,
-    )
+        status.update(label="Ответ готов", state="complete", expanded=False)
+        return answer
 
 
-def queue_ai_request(question, kind, previous_track_path=None):
+def queue_ai_request(
+    question,
+    kind,
+    previous_track_path=None,
+    new_version=False,
+):
     now = monotonic()
     last_request_at = st.session_state.last_ai_request_at
     if last_request_at is not None and now - last_request_at < 5:
@@ -303,6 +320,7 @@ def queue_ai_request(question, kind, previous_track_path=None):
         "kind": kind,
         "question": question,
         "previous_track_path": previous_track_path,
+        "new_version": new_version,
     }
     st.session_state.pendingai_request = True
     st.session_state.view_mode = "chat"
@@ -389,6 +407,14 @@ else:
                     "vibe_description"
                 ]
                 old_track_path = st.session_state.file_path
+                new_version_uploaded = (
+                    settings_result["track"] is not None
+                    if settings_result["analysis_mode"] == "master"
+                    else any(
+                        settings_result[file_key] is not None
+                        for file_key in ("beat", "vocal")
+                    )
+                )
                 if settings_result["track"] is not None:
                     old_track_name = st.session_state.track_name
                     st.session_state.track_name = settings_result["track"].name
@@ -420,6 +446,7 @@ else:
                     )
 
                 st.session_state.analysis_mode = settings_result["analysis_mode"]
+                st.session_state.settings_comment_generation += 1
                 previous_track_for_graph = (
                     old_track_path
                     if (
@@ -428,23 +455,40 @@ else:
                     )
                     else None
                 )
+                update_comment = settings_result["version_comment"]
+                if new_version_uploaded:
+                    update_question = (
+                        "Я только что загрузил новую версию трека после правок."
+                    )
+                    if update_comment:
+                        update_question += f" {update_comment}"
+                    else:
+                        update_question += (
+                            " Оцени, что изменилось и что попробовать дальше."
+                        )
+                else:
+                    update_question = (
+                        update_comment
+                        or "Я обновил настройки. Оцени текущий трек и подскажи, "
+                        "что попробовать дальше."
+                    )
                 if st.session_state.analysis_mode == "stems":
                     if not st.session_state.beat_path or not st.session_state.vocal_path:
                         st.error("Для режима стемов загрузи и бит, и вокал.")
                     else:
                         queue_ai_request(
-                            "Я обновил материалы. Оцени звучание и подскажи, "
-                            "что попробовать дальше.",
+                            update_question,
                             "settings",
                             previous_track_for_graph,
+                            new_version_uploaded,
                         )
                         st.rerun()
                 else:
                     queue_ai_request(
-                        "Я обновил материалы. Оцени звучание и подскажи, "
-                        "что попробовать дальше.",
+                        update_question,
                         "settings",
                         previous_track_for_graph,
+                        new_version_uploaded,
                     )
                     st.rerun()
         else:

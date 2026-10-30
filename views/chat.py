@@ -6,8 +6,7 @@ from utils.aiutils import AIRequestError
 def _process_pending_request(chat_history, process_pending_request, save_history):
     payload = st.session_state.pendingai_payload
     try:
-        with st.spinner("Нейросеть слушает ваш трек..."):
-            answer = process_pending_request(payload)
+        answer = process_pending_request(payload)
     except (AIRequestError, ValueError) as error:
         st.session_state.pendingai_error = str(error)
     else:
@@ -48,16 +47,9 @@ def render_chat(
             return None
         _process_pending_request(chat_history, process_pending_request, save_history)
 
-    col_form, col_settings = st.columns([9, 1], vertical_alignment="bottom")
-    with col_form:
-        with st.form("chat_form", clear_on_submit=True):
-            user_question = st.text_input(
-                "Вопрос...", label_visibility="collapsed"
-            )
-            send_clicked = st.form_submit_button(
-                "Отправить",
-                use_container_width=True,
-            )
+    col_input, col_settings = st.columns([9, 1], vertical_alignment="bottom")
+    with col_input:
+        user_question = st.chat_input("Задай вопрос...")
     with col_settings:
         settings_clicked = st.button(
             "⚙️",
@@ -75,6 +67,6 @@ def render_chat(
         return {"action": "settings"}
     if consolidate_clicked:
         return {"action": "consolidate"}
-    if send_clicked and user_question:
+    if user_question:
         return {"action": "send", "question": user_question}
     return None

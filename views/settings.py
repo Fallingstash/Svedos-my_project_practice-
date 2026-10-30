@@ -26,18 +26,23 @@ def render_settings(segments, current_vibe=""):
         max_chars=500,
         key="session_vibe_input",
     )
+    version_comment = st.text_area(
+        "Комментарий к новой версии (что изменил?)",
+        placeholder="Например: поднял верха и убрал гул в низах",
+        max_chars=500,
+        key=(
+            f"settings_new_version_comment_"
+            f"{st.session_state.session_id}_"
+            f"{st.session_state.get('settings_comment_generation', 0)}"
+        ),
+    )
     analysis_mode = st.radio(
         "Что анализировать",
         ("master", "stems"),
         format_func=ANALYSIS_MODE_LABELS.get,
         key="analysis_mode_selector",
     )
-    new_track = st.file_uploader(
-        "Новая версия трека",
-        type=["mp3", "wav"],
-        key="new_track",
-        max_upload_size=MAX_UPLOAD_SIZE_MB,
-    )
+    new_track = None
     new_reference = st.file_uploader(
         "Новый референс",
         type=["mp3", "wav"],
@@ -46,7 +51,14 @@ def render_settings(segments, current_vibe=""):
     )
     new_beat = None
     new_vocal = None
-    if analysis_mode == "stems":
+    if analysis_mode == "master":
+        new_track = st.file_uploader(
+            "Новая версия трека",
+            type=["mp3", "wav"],
+            key="new_track",
+            max_upload_size=MAX_UPLOAD_SIZE_MB,
+        )
+    else:
         new_beat = st.file_uploader(
             "Стем бита",
             type=["mp3", "wav"],
@@ -79,5 +91,6 @@ def render_settings(segments, current_vibe=""):
             "beat": new_beat,
             "vocal": new_vocal,
             "vibe_description": vibe_description.strip(),
+            "version_comment": version_comment.strip(),
         }
     return None

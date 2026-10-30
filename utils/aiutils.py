@@ -6,7 +6,7 @@ from openai import OpenAI
 from openai import OpenAIError
 
 
-MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 
 load_dotenv()
 
@@ -58,7 +58,7 @@ def get_client():
 
 def get_chat_messages(system_prompt, user_prompt, chat_history=None):
     messages = [{"role": "system", "content": system_prompt}]
-    for message in chat_history or []:
+    for message in (chat_history or [])[-6:]:
         messages.append(
             {"role": message["role"], "content": message["content"]}
         )
@@ -80,6 +80,7 @@ def get_strict_prompt(
     segment_data=None,
     genre_delta="",
     vibe_description="",
+    new_version=False,
 ):
     segment_text = ""
     if segments_list:
@@ -175,10 +176,23 @@ Decay, Room Size и подобные. Вместо High Pass или Low Cut пи
 {stem_instruction}
 {segment_text}"""
 
+    new_version_context = ""
+    if new_version:
+        new_version_context = f"""
+Я только что загрузил НОВУЮ версию трека после правок. Вот новые данные:
+Пики: {request_data}
+Баланс частот: {bands_data}
+Динамика: {dynamics_data}
+Опирайся на эти свежие измерения текущего файла. Предыдущие ответы в истории — это
+только контекст диалога, не используй старые измерения вместо новых и не повторяй
+прежние советы, если текущие данные и комментарий пользователя их не подтверждают.
+"""
+
     user_prompt = f"""
 Контекст анализа: {analysis_context}
 Режим анализа: {"стемы (бит + вокал)" if analysis_mode == "stems" else "мастер-трек"}.
 
+{new_version_context}
 Вот данные о самых громких пиках:
 {request_data}
 
