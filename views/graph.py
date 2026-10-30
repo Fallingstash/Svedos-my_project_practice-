@@ -62,7 +62,7 @@ def render_graph(
                 alpha=0.9,
                 linewidth=1.2,
                 linestyle=":",
-                label=f"Жанровый ориентир: {genre_name}",
+                label=f"Средний профиль жанра: {genre_name}",
             )
 
         if previous_spectrum is not None:

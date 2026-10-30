@@ -42,6 +42,12 @@ def render_onboarding(segments):
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
+        vibe_description = st.text_area(
+            "Опиши свой вайб / цель",
+            placeholder="Например: хочу мрачный трэп с грязным звуком",
+            max_chars=500,
+            key="onboarding_vibe_input",
+        )
         genre = st.selectbox("Жанр", ["Рэп", "Хип-Хоп", "Поп", "Лоу-фай"])
         analyze_clicked = st.form_submit_button("🚀 Начать анализ", type="primary")
 
@@ -55,6 +61,7 @@ def render_onboarding(segments):
             "track": uploaded_file,
             "reference": ref_file,
             "genre": genre,
+            "vibe_description": vibe_description.strip(),
         }
     if analyze_clicked and analysis_mode == "master":
         st.error("Загрузите мастер-трек, чтобы начать анализ.")
@@ -68,5 +75,6 @@ def render_onboarding(segments):
                 "vocal": vocal_file,
                 "reference": None,
                 "genre": genre,
+                "vibe_description": vibe_description.strip(),
             }
     return None

@@ -34,6 +34,8 @@ SESSION_DEFAULTS = {
     "old_frequencies": None,
     "segments": [],
     "genre": "Рэп",
+    "vibe_description": "",
+    "session_vibe_input": None,
     "file_path": "",
     "ref_path": None,
     "beat_path": None,
@@ -120,6 +122,7 @@ def persist_current_session():
             "track_name": st.session_state.track_name,
             "display_name": st.session_state.display_name or st.session_state.track_name,
             "genre": st.session_state.genre,
+            "vibe_description": st.session_state.vibe_description,
             "created_at": st.session_state.session_created_at,
             "track_path": st.session_state.file_path,
             "reference_path": st.session_state.ref_path,
@@ -251,6 +254,7 @@ def request_analysis(
         stem_context,
         audio_data.get("segment_analyses"),
         get_genre_reference_delta(audio_data, st.session_state.genre),
+        st.session_state.vibe_description,
     )
     return request_ai_response(system_prompt, user_prompt, chat_history)
 
@@ -318,6 +322,11 @@ if not st.session_state.analyzed:
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
         st.session_state.genre = onboarding_result["genre"]
+        st.session_state.vibe_description = onboarding_result.get(
+            "vibe_description",
+            "",
+        )
+        st.session_state.session_vibe_input = st.session_state.vibe_description
         st.session_state.chat_history = []
         st.session_state.old_spectrum = None
         st.session_state.old_frequencies = None
@@ -363,7 +372,10 @@ else:
 
     with col_chat:
         if st.session_state.view_mode == "settings":
-            settings_result = render_settings(st.session_state.segments)
+            settings_result = render_settings(
+                st.session_state.segments,
+                st.session_state.vibe_description,
+            )
 
             if settings_result and settings_result["action"] == "segments_updated":
                 persist_current_session()
@@ -374,6 +386,9 @@ else:
                 st.rerun()
 
             if settings_result and settings_result["action"] == "apply":
+                st.session_state.vibe_description = settings_result[
+                    "vibe_description"
+                ]
                 old_track_path = st.session_state.file_path
                 if settings_result["track"] is not None:
                     old_track_name = st.session_state.track_name
@@ -481,4 +496,7 @@ else:
                 previous_spectrum,
                 reference_delta,
                 stem_data,
+                st.session_state.genre
+                if st.session_state.analysis_mode == "master"
+                else None,
             )

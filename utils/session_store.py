@@ -27,7 +27,8 @@ def _connect():
             beat_path TEXT,
             vocal_path TEXT,
             segments_json TEXT NOT NULL,
-            chat_history_json TEXT NOT NULL
+            chat_history_json TEXT NOT NULL,
+            vibe_description TEXT NOT NULL DEFAULT ''
         )
         """
     )
@@ -40,6 +41,7 @@ def _connect():
         ("analysis_mode", "TEXT NOT NULL DEFAULT 'master'"),
         ("beat_path", "TEXT"),
         ("vocal_path", "TEXT"),
+        ("vibe_description", "TEXT NOT NULL DEFAULT ''"),
     ):
         if column_name not in existing_columns:
             connection.execute(
@@ -58,9 +60,9 @@ def save_session(session):
             INSERT INTO sessions (
                 id, user_id, track_name, display_name, genre, created_at, updated_at,
                 track_path, reference_path, analysis_mode, beat_path, vocal_path,
-                segments_json, chat_history_json
+                segments_json, chat_history_json, vibe_description
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 track_name = excluded.track_name,
@@ -73,7 +75,8 @@ def save_session(session):
                 beat_path = excluded.beat_path,
                 vocal_path = excluded.vocal_path,
                 segments_json = excluded.segments_json,
-                chat_history_json = excluded.chat_history_json
+                chat_history_json = excluded.chat_history_json,
+                vibe_description = excluded.vibe_description
             WHERE sessions.user_id = excluded.user_id
             """,
             (
@@ -91,6 +94,7 @@ def save_session(session):
                 session.get("vocal_path"),
                 json.dumps(session.get("segments", []), ensure_ascii=False),
                 json.dumps(session.get("chat_history", []), ensure_ascii=False),
+                session.get("vibe_description", ""),
             ),
         )
         if cursor.rowcount == 0:
@@ -169,6 +173,7 @@ def load_session(session_id, user_id):
         "vocal_path": row["vocal_path"],
         "segments": json.loads(row["segments_json"]),
         "chat_history": json.loads(row["chat_history_json"]),
+        "vibe_description": row["vibe_description"],
     }
 
 

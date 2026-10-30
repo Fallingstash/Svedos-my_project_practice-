@@ -11,13 +11,21 @@ MAX_UPLOAD_SIZE_MB = 30
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
-def render_settings(segments):
+def render_settings(segments, current_vibe=""):
     col_heading, col_close = st.columns([4, 1])
     col_heading.subheader("⚙️ Настройки трека")
     if col_close.button("❌ Отмена", key="close_settings"):
         return {"action": "close"}
 
     st.write("**Обновить трек / Добавить референс:**")
+    if st.session_state.get("session_vibe_input") is None:
+        st.session_state.session_vibe_input = current_vibe
+    vibe_description = st.text_area(
+        "Опиши свой вайб / цель",
+        placeholder="Например: хочу мрачный трэп с грязным звуком",
+        max_chars=500,
+        key="session_vibe_input",
+    )
     analysis_mode = st.radio(
         "Что анализировать",
         ("master", "stems"),
@@ -70,5 +78,6 @@ def render_settings(segments):
             "reference": new_reference,
             "beat": new_beat,
             "vocal": new_vocal,
+            "vibe_description": vibe_description.strip(),
         }
     return None

@@ -36,6 +36,8 @@ def _activate_session(session_id):
     st.session_state.display_name = session["display_name"]
     st.session_state.session_created_at = session["created_at"]
     st.session_state.genre = session["genre"]
+    st.session_state.vibe_description = session["vibe_description"]
+    st.session_state.session_vibe_input = session["vibe_description"]
     st.session_state.file_path = session["track_path"]
     st.session_state.ref_path = session["reference_path"]
     st.session_state.analysis_mode = session["analysis_mode"]
@@ -63,6 +65,9 @@ def _start_new_session():
         "old_frequencies": None,
         "segments": [],
         "genre": "Рэп",
+        "vibe_description": "",
+        "session_vibe_input": None,
+        "onboarding_vibe_input": "",
         "file_path": "",
         "ref_path": None,
         "beat_path": None,
