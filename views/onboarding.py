@@ -1,7 +1,19 @@
 import streamlit as st
 
+from utils.audioutils import validate_audio_upload
 from views.segment_builder import render_segment_builder
 from views.settings import ANALYSIS_MODE_LABELS, MAX_UPLOAD_SIZE_MB
+
+
+def _show_upload_errors(uploaded_files):
+    errors = {
+        error
+        for uploaded_file in uploaded_files
+        if (error := validate_audio_upload(uploaded_file)) is not None
+    }
+    for error in errors:
+        st.error(error)
+    return bool(errors)
 
 
 def render_onboarding(segments):
@@ -63,20 +75,21 @@ def render_onboarding(segments):
     if render_segment_builder(segments, "onboarding"):
         st.rerun()
 
-    if analyze_clicked and analysis_mode == "master" and uploaded_file is not None:
-        return {
-            "analysis_mode": analysis_mode,
-            "track": uploaded_file,
-            "reference": ref_file,
-            "genre": genre,
-            "vibe_description": vibe_description.strip(),
-        }
     if analyze_clicked and analysis_mode == "master":
-        st.error("Загрузите мастер-трек, чтобы начать анализ.")
+        if uploaded_file is None:
+            st.error("Загрузите мастер-трек, чтобы начать анализ.")
+        elif not _show_upload_errors((uploaded_file, ref_file)):
+            return {
+                "analysis_mode": analysis_mode,
+                "track": uploaded_file,
+                "reference": ref_file,
+                "genre": genre,
+                "vibe_description": vibe_description.strip(),
+            }
     if analyze_clicked and analysis_mode == "stems":
         if beat_file is None or vocal_file is None:
             st.error("Загрузите оба файла: стем бита и стем вокала.")
-        else:
+        elif not _show_upload_errors((beat_file, vocal_file)):
             return {
                 "analysis_mode": analysis_mode,
                 "beat": beat_file,

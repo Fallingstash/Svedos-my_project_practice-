@@ -3,7 +3,22 @@ from pathlib import Path
 
 import streamlit as st
 
-from utils.session_store import list_sessions, load_session, rename_session
+from utils.config import MAX_USER_MESSAGES
+from utils.session_store import (
+    delete_session,
+    list_sessions,
+    load_session,
+    rename_session,
+)
+
+
+@st.dialog("🚀 Upgrade Plan")
+def _show_upgrade_dialog():
+    st.write(
+        "Лимит бесплатных сессий исчерпан. Купите 10 полноценных разборов "
+        "треков за 199₽."
+    )
+    st.button("Оплата скоро появится", disabled=True, use_container_width=True)
 
 
 def _session_label(session):
@@ -95,6 +110,20 @@ def render_sidebar():
     with st.sidebar:
         if "renaming_session_id" not in st.session_state:
             st.session_state.renaming_session_id = None
+        st.subheader("Ваш тариф: FREE")
+        used_messages = sum(
+            message["role"] == "user"
+            for message in st.session_state.chat_history
+        )
+        remaining_messages = max(0, MAX_USER_MESSAGES - used_messages)
+        remaining_percent = round(remaining_messages / MAX_USER_MESSAGES * 100)
+        st.progress(
+            remaining_percent / 100,
+            text=f"Осталось сообщений: {remaining_percent}%",
+        )
+        if st.button("🚀 Upgrade Plan", use_container_width=True):
+            _show_upgrade_dialog()
+
         st.header("Мои сессии")
         if st.button("➕ Новая сессия", use_container_width=True):
             _start_new_session()
@@ -103,7 +132,7 @@ def render_sidebar():
             is_active = session["id"] == st.session_state.session_id
             label = _session_label(session)
             session_name = session["display_name"] or session["track_name"]
-            button_col, rename_col = st.columns([8, 1])
+            button_col, rename_col, delete_col = st.columns([7, 1, 1])
             if button_col.button(
                 f"{'▶ ' if is_active else ''}{label}",
                 key=f"open_session_{session['id']}",
@@ -116,9 +145,25 @@ def render_sidebar():
                 "✏️",
                 key=f"rename_open_{session['id']}",
                 help="Переименовать сессию",
+                use_container_width=True,
             ):
                 st.session_state.renaming_session_id = session["id"]
                 st.rerun()
+
+            if delete_col.button(
+                "🗑️",
+                key=f"delete_session_{session['id']}",
+                help="Удалить сессию",
+                use_container_width=True,
+            ):
+                try:
+                    delete_session(session["id"], st.session_state.user_id)
+                except ValueError as error:
+                    st.error(str(error))
+                else:
+                    if is_active:
+                        _start_new_session()
+                    st.rerun()
 
             if st.session_state.renaming_session_id == session["id"]:
                 with st.form(f"rename_form_{session['id']}"):

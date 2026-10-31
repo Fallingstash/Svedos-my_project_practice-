@@ -1,8 +1,11 @@
+import hashlib
 import json
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from time import time
 
+from utils.config import RATE_LIMIT_SECONDS
 
 DATABASE_PATH = Path(__file__).resolve().parents[1] / "history" / "svedos.db"
 
@@ -104,6 +107,55 @@ def save_session(session):
         connection.close()
 
 
+def allow_ai_request(user_id, ip_address=None):
+    now = time()
+    rate_limit_keys = {f"user:{user_id}"}
+    if ip_address:
+        ip_digest = hashlib.sha256(ip_address.encode("utf-8")).hexdigest()
+        rate_limit_keys.add(f"ip:{ip_digest}")
+
+    connection = _connect()
+    try:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS request_rate_limits (
+                rate_key TEXT PRIMARY KEY,
+                last_request_at REAL NOT NULL
+            )
+            """
+        )
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "DELETE FROM request_rate_limits WHERE last_request_at < ?",
+            (now - 86400,),
+        )
+        for rate_key in rate_limit_keys:
+            row = connection.execute(
+                "SELECT last_request_at FROM request_rate_limits WHERE rate_key = ?",
+                (rate_key,),
+            ).fetchone()
+            if (
+                row is not None
+                and now - row["last_request_at"] < RATE_LIMIT_SECONDS
+            ):
+                connection.rollback()
+                return False
+
+        connection.executemany(
+            """
+            INSERT INTO request_rate_limits (rate_key, last_request_at)
+            VALUES (?, ?)
+            ON CONFLICT(rate_key) DO UPDATE SET
+                last_request_at = excluded.last_request_at
+            """,
+            ((rate_key, now) for rate_key in rate_limit_keys),
+        )
+        connection.commit()
+        return True
+    finally:
+        connection.close()
+
+
 def list_sessions(user_id):
     connection = _connect()
     try:
@@ -187,6 +239,20 @@ def rename_session(session_id, user_id, display_name):
         cursor = connection.execute(
             "UPDATE sessions SET display_name = ? WHERE id = ? AND user_id = ?",
             (normalized_name, session_id, user_id),
+        )
+        if cursor.rowcount == 0:
+            raise ValueError("Сессия не найдена.")
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def delete_session(session_id, user_id):
+    connection = _connect()
+    try:
+        cursor = connection.execute(
+            "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
         )
         if cursor.rowcount == 0:
             raise ValueError("Сессия не найдена.")

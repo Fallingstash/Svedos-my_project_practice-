@@ -21,9 +21,15 @@ def render_graph(
     reference_delta="",
     stem_data=None,
     genre_name=None,
+    audio_path=None,
+    vocal_path=None,
 ):
     with st.container(height=800):
         st.subheader("📊 Спектр трека")
+        if audio_path:
+            st.audio(audio_path)
+        if vocal_path:
+            st.audio(vocal_path)
 
         figure, axis = plt.subplots(figsize=(8, 4))
         axis.plot(

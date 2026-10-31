@@ -1,10 +1,20 @@
 from datetime import datetime
 from pathlib import Path
-from time import monotonic
 from uuid import uuid4
 
 import streamlit as st
 
+from utils.config import (
+    INVALID_AUDIO_TYPE_MESSAGE,
+    MAX_CHAT_MESSAGE_CHARS,
+    MAX_UPLOAD_SIZE_BYTES,
+    MAX_USER_MESSAGES,
+    MESSAGE_LIMIT_MESSAGE,
+    MESSAGE_TOO_LONG_MESSAGE,
+    RATE_LIMIT_MESSAGE,
+    SUPPORTED_AUDIO_EXTENSIONS,
+    UPLOAD_TOO_LARGE_MESSAGE,
+)
 from utils.aiutils import (
     get_consolidation_prompt,
     get_strict_prompt,
@@ -16,12 +26,11 @@ from utils.audioutils import (
     compare_spectra,
     get_genre_reference_delta,
 )
-from utils.session_store import save_session
+from utils.session_store import allow_ai_request, save_session
 from views.chat import render_chat
 from views.graph import render_graph
 from views.onboarding import render_onboarding
 from views.settings import render_settings
-from views.settings import MAX_UPLOAD_SIZE_BYTES
 from views.sidebar import render_sidebar
 
 
@@ -51,7 +60,6 @@ SESSION_DEFAULTS = {
     "pendingai_request": False,
     "pendingai_payload": None,
     "pendingai_error": None,
-    "last_ai_request_at": None,
     "chat_upload_generation": 0,
     "renaming_session_id": None,
 }
@@ -85,11 +93,15 @@ def analysis_segments():
 
 def save_versioned_upload(uploaded_file, prefix):
     extension = Path(uploaded_file.name).suffix.lower()
-    if extension not in {".mp3", ".wav"}:
-        raise ValueError("Поддерживаются только файлы MP3 и WAV.")
+    content_type = str(getattr(uploaded_file, "type", "") or "").lower()
+    if (
+        extension not in SUPPORTED_AUDIO_EXTENSIONS
+        or not content_type.startswith("audio/")
+    ):
+        raise ValueError(INVALID_AUDIO_TYPE_MESSAGE)
     file_buffer = uploaded_file.getbuffer()
     if file_buffer.nbytes > MAX_UPLOAD_SIZE_BYTES:
-        raise ValueError("Максимальный размер аудиофайла — 30 МБ.")
+        raise ValueError(UPLOAD_TOO_LARGE_MESSAGE)
 
     if not st.session_state.session_id:
         st.session_state.session_id = str(uuid4())
@@ -103,11 +115,8 @@ def save_versioned_upload(uploaded_file, prefix):
     )
     session_directory.mkdir(parents=True, exist_ok=True)
 
-    version = 1
-    while (session_directory / f"{prefix}_v{version}{extension}").exists():
-        version += 1
-    file_path = session_directory / f"{prefix}_v{version}{extension}"
-    with file_path.open("wb") as audio_file:
+    file_path = session_directory / f"{prefix}_{uuid4().hex}{extension}"
+    with file_path.open("xb") as audio_file:
         audio_file.write(file_buffer)
     return str(file_path)
 
@@ -274,11 +283,22 @@ def request_analysis(
 
 
 def process_pending_ai_request(payload):
+    used_messages = sum(
+        message["role"] == "user"
+        for message in st.session_state.chat_history
+    )
+    usage_percent = min(
+        100,
+        round(used_messages / MAX_USER_MESSAGES * 100),
+    )
+    thinking_label = (
+        f"ИИ анализирует... (Использовано {usage_percent}% бесплатного лимита)"
+    )
     if payload["kind"] == "consolidation":
         system_prompt, user_prompt = get_consolidation_prompt(
             st.session_state.genre
         )
-        with st.status("ИИ думает...", expanded=False) as status:
+        with st.status(thinking_label, expanded=False) as status:
             answer = request_ai_response(
                 system_prompt,
                 user_prompt,
@@ -300,7 +320,7 @@ def process_pending_ai_request(payload):
         status.update(label="Считаю частоты...", state="running")
         audio_data, stem_data = analyze_current_source()
         reference_delta = get_reference_delta(audio_data)
-        status.update(label="ИИ думает...", state="running")
+        status.update(label=thinking_label, state="running")
         answer = request_analysis(
             payload["question"],
             audio_data,
@@ -319,13 +339,28 @@ def queue_ai_request(
     previous_track_path=None,
     new_version=False,
 ):
-    now = monotonic()
-    last_request_at = st.session_state.last_ai_request_at
-    if last_request_at is not None and now - last_request_at < 5:
-        st.session_state.pendingai_error = "Не так быстро!"
+    if kind == "chat" and len(question) > MAX_CHAT_MESSAGE_CHARS:
+        st.session_state.pendingai_error = MESSAGE_TOO_LONG_MESSAGE
+        st.session_state.view_mode = "chat"
         return False
 
-    st.session_state.last_ai_request_at = now
+    message_count = sum(
+        message["role"] == "user"
+        for message in st.session_state.chat_history
+    )
+    if message_count >= MAX_USER_MESSAGES:
+        st.session_state.pendingai_error = MESSAGE_LIMIT_MESSAGE
+        st.session_state.view_mode = "chat"
+        return False
+
+    if not allow_ai_request(
+        st.session_state.user_id,
+        st.context.ip_address,
+    ):
+        st.session_state.pendingai_error = RATE_LIMIT_MESSAGE
+        st.session_state.view_mode = "chat"
+        return False
+
     st.session_state.chat_history.append({"role": "user", "content": question})
     st.session_state.pendingai_payload = {
         "kind": kind,
@@ -402,6 +437,16 @@ if not st.session_state.analyzed:
         )
         st.rerun()
 else:
+    try:
+        current_audio, current_stem_data = analyze_current_source()
+        reference_audio = get_reference_data()
+        analysis_error = None
+    except ValueError as error:
+        current_audio = None
+        current_stem_data = None
+        reference_audio = None
+        analysis_error = str(error)
+
     col_chat, col_graph = st.columns([1, 1])
 
     with col_chat:
@@ -513,6 +558,12 @@ else:
                 st.session_state.genre,
                 process_pending_ai_request,
                 persist_current_session,
+                track_name=(
+                    st.session_state.display_name
+                    or st.session_state.track_name
+                ),
+                audio_data=current_audio,
+                stem_data=current_stem_data,
             )
 
             if chat_result and chat_result["action"] == "settings":
@@ -531,11 +582,8 @@ else:
                 st.rerun()
 
     with col_graph:
-        try:
-            current_audio, stem_data = analyze_current_source()
-            reference_audio = get_reference_data()
-        except ValueError as error:
-            st.error(str(error))
+        if analysis_error:
+            st.error(analysis_error)
         else:
             reference_delta = (
                 get_reference_delta(current_audio)
@@ -554,8 +602,12 @@ else:
                 reference_audio,
                 previous_spectrum,
                 reference_delta,
-                stem_data,
+                current_stem_data,
                 st.session_state.genre
                 if st.session_state.analysis_mode == "master"
+                else None,
+                st.session_state.file_path,
+                st.session_state.vocal_path
+                if st.session_state.analysis_mode == "stems"
                 else None,
             )

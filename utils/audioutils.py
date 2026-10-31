@@ -1,4 +1,5 @@
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import librosa
 import numpy as np
@@ -6,6 +7,13 @@ import pyloudnorm as pyln
 import streamlit as st
 from scipy.signal import find_peaks, resample_poly
 
+from utils.config import (
+    INVALID_AUDIO_FILE_MESSAGE,
+    INVALID_AUDIO_TYPE_MESSAGE,
+    MAX_UPLOAD_SIZE_BYTES,
+    SUPPORTED_AUDIO_EXTENSIONS,
+    UPLOAD_TOO_LARGE_MESSAGE,
+)
 
 FFT_SIZE = 2048
 TRUE_PEAK_OVERSAMPLE = 4
@@ -19,6 +27,39 @@ FREQUENCY_BANDS = (
     (5000, 10000, "5-10 кГц"),
     (10000, 16000, "10-16 кГц"),
 )
+
+
+def validate_audio_upload(uploaded_file):
+    if uploaded_file is None:
+        return None
+
+    content_type = str(getattr(uploaded_file, "type", "") or "").lower()
+    if not content_type.startswith("audio/"):
+        return INVALID_AUDIO_TYPE_MESSAGE
+
+    extension = Path(uploaded_file.name).suffix.lower()
+    if extension not in SUPPORTED_AUDIO_EXTENSIONS:
+        return INVALID_AUDIO_TYPE_MESSAGE
+
+    file_buffer = uploaded_file.getbuffer()
+    if file_buffer.nbytes > MAX_UPLOAD_SIZE_BYTES:
+        return UPLOAD_TOO_LARGE_MESSAGE
+
+    try:
+        with TemporaryDirectory() as temporary_directory:
+            temporary_path = Path(temporary_directory) / f"upload{extension}"
+            temporary_path.write_bytes(file_buffer)
+            audio, _ = librosa.load(
+                str(temporary_path),
+                sr=None,
+                mono=False,
+                duration=1,
+            )
+            if audio.size == 0:
+                return INVALID_AUDIO_FILE_MESSAGE
+    except Exception:
+        return INVALID_AUDIO_FILE_MESSAGE
+    return None
 
 
 def _format_energy(spectrum, frequencies, lower, upper):
@@ -338,7 +379,10 @@ def _analyze_audio(audio, sample_rate, segments=()):
 
 @st.cache_data(show_spinner=False)
 def _analyze_audio_cached(file_path, file_size, modified_ns, segments):
-    audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
+    try:
+        audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
+    except Exception as error:
+        raise ValueError(INVALID_AUDIO_FILE_MESSAGE) from error
     return _analyze_audio(audio, sample_rate, segments)
 
 

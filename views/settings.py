@@ -1,5 +1,7 @@
 import streamlit as st
 
+from utils.audioutils import validate_audio_upload
+from utils.config import MAX_UPLOAD_SIZE_MB
 from views.segment_builder import render_segment_builder
 
 
@@ -7,8 +9,6 @@ ANALYSIS_MODE_LABELS = {
     "master": "Анализировать мастер-трек",
     "stems": "Анализировать стемы (Бит + Вокал)",
 }
-MAX_UPLOAD_SIZE_MB = 30
-MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
 
 def render_settings(segments, current_vibe=""):
@@ -74,6 +74,15 @@ def render_settings(segments, current_vibe=""):
         return {"action": "segments_updated"}
 
     if apply_changes:
+        upload_errors = {
+            error
+            for uploaded_file in (new_reference, new_track, new_beat, new_vocal)
+            if (error := validate_audio_upload(uploaded_file)) is not None
+        }
+        if upload_errors:
+            for error in upload_errors:
+                st.error(error)
+            return None
         return {
             "action": "apply",
             "analysis_mode": analysis_mode,
