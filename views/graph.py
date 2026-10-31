@@ -107,6 +107,14 @@ def render_graph(
                     [
                         ("LUFS", f"{stem['loudness']:.1f}"),
                         ("True Peak", f"{stem['true_peak_db']:.1f} dBTP"),
+                        (
+                            "Фазовая корреляция",
+                            f"{stem['phase_correlation']:.2f}",
+                        ),
+                        (
+                            "Спектральный центроид",
+                            f"{stem['spectralcentroid']:.0f} Гц",
+                        ),
                         ("Стерео-ширина", f"{stem['stereo_width_pct']:.1f}%"),
                         (
                             "PLR",
@@ -127,6 +135,14 @@ def render_graph(
                     ("Громкость (LUFS)", f"{audio_data['loudness']:.1f}"),
                     ("Пиковый уровень (dBFS)", f"{audio_data['max_peak_db']:.1f}"),
                     ("True Peak (dBTP)", f"{audio_data['true_peak_db']:.1f}"),
+                    (
+                        "Фазовая корреляция",
+                        f"{audio_data['phase_correlation']:.2f}",
+                    ),
+                    (
+                        "Спектральный центроид",
+                        f"{audio_data['spectralcentroid']:.0f} Гц",
+                    ),
                     ("Crest Factor", f"{audio_data['crest_factor']:.1f} дБ"),
                     ("Стерео-ширина", f"{audio_data['stereo_width_pct']:.1f}%"),
                     (

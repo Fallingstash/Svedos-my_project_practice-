@@ -240,6 +240,24 @@ def _stereo_metrics(audio):
     return width_ratio * 100, width_db
 
 
+def _phase_correlation(audio):
+    if audio.ndim < 2 or audio.shape[0] < 2:
+        return 1.0
+
+    left = np.asarray(audio[0], dtype=float)
+    right = np.asarray(audio[1], dtype=float)
+    if left.size == 0 or right.size == 0:
+        return 0.0
+
+    left_centered = left - np.mean(left)
+    right_centered = right - np.mean(right)
+    denominator = np.linalg.norm(left_centered) * np.linalg.norm(right_centered)
+    if denominator == 0:
+        return 1.0 if np.array_equal(left, right) else 0.0
+    correlation = float(np.dot(left_centered, right_centered) / denominator)
+    return float(np.clip(correlation, -1.0, 1.0))
+
+
 def _short_term_lufs(mono_audio, sample_rate):
     window_size = LUFS_WINDOW_SECONDS * sample_rate
     if len(mono_audio) < window_size * 2:
@@ -262,6 +280,7 @@ def _analyze_audio(audio, sample_rate, segments=()):
     selected_audio, analysis_context = _prepare_audio(audio, sample_rate, segments)
     stereo_width_pct, stereo_width_db = _stereo_metrics(selected_audio)
     mono_audio = librosa.to_mono(selected_audio) if selected_audio.ndim == 2 else selected_audio
+    phase_correlation = _phase_correlation(selected_audio)
 
     stft = librosa.stft(mono_audio, n_fft=FFT_SIZE)
     magnitude = np.abs(stft)
@@ -274,6 +293,15 @@ def _analyze_audio(audio, sample_rate, segments=()):
     normalized_spectrum = librosa.amplitude_to_db(
         average_magnitude,
         ref=max(float(np.max(average_magnitude)), 1e-10),
+    )
+    spectralcentroid = float(
+        np.mean(
+            librosa.feature.spectral_centroid(
+                y=mono_audio,
+                sr=sample_rate,
+                n_fft=FFT_SIZE,
+            )
+        )
     )
     frequencies = librosa.fft_frequencies(sr=sample_rate, n_fft=FFT_SIZE)
 
@@ -328,6 +356,8 @@ def _analyze_audio(audio, sample_rate, segments=()):
         f"Динамика (Crest Factor): {crest_factor:.1f} дБ",
         f"Стерео-ширина (уровень боковой части к центральной): "
         f"{stereo_width_pct:.1f}% ({stereo_width_db:.1f} дБ)",
+        f"Фазовая корреляция: {phase_correlation:.3f}",
+        f"Спектральный центроид: {spectralcentroid:.0f} Гц",
         f"PLR (True Peak минус LUFS): "
         f"{plr:.1f} дБ" if plr is not None else "PLR: нет данных",
         (
@@ -352,6 +382,8 @@ def _analyze_audio(audio, sample_rate, segments=()):
         "plr": plr,
         "stereo_width_pct": stereo_width_pct,
         "stereo_width_db": stereo_width_db,
+        "phase_correlation": phase_correlation,
+        "spectralcentroid": spectralcentroid,
         "short_term_lufs_variance": short_term_lufs_variance,
         "top_peaks": top_peaks,
         "analysis_context": analysis_context,
@@ -372,6 +404,8 @@ def _analyze_audio(audio, sample_rate, segments=()):
                     "loudness": segment_result["loudness"],
                     "true_peak_db": segment_result["true_peak_db"],
                     "crest_factor": segment_result["crest_factor"],
+                    "phase_correlation": segment_result["phase_correlation"],
+                    "spectralcentroid": segment_result["spectralcentroid"],
                 }
             )
     return result

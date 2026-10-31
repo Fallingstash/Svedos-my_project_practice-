@@ -1,3 +1,4 @@
+import random
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -5,6 +6,7 @@ from uuid import uuid4
 import streamlit as st
 
 from utils.config import (
+    AUDIO_FACTS,
     INVALID_AUDIO_TYPE_MESSAGE,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_UPLOAD_SIZE_BYTES,
@@ -299,6 +301,7 @@ def process_pending_ai_request(payload):
             st.session_state.genre
         )
         with st.status(thinking_label, expanded=False) as status:
+            st.info(f"💡 Факт о звуке: {random.choice(AUDIO_FACTS)}")
             answer = request_ai_response(
                 system_prompt,
                 user_prompt,
@@ -321,6 +324,7 @@ def process_pending_ai_request(payload):
         audio_data, stem_data = analyze_current_source()
         reference_delta = get_reference_delta(audio_data)
         status.update(label=thinking_label, state="running")
+        st.info(f"💡 Факт о звуке: {random.choice(AUDIO_FACTS)}")
         answer = request_analysis(
             payload["question"],
             audio_data,
@@ -564,6 +568,8 @@ else:
                 ),
                 audio_data=current_audio,
                 stem_data=current_stem_data,
+                session_id=st.session_state.session_id,
+                user_id=st.session_state.user_id,
             )
 
             if chat_result and chat_result["action"] == "settings":

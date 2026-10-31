@@ -6,6 +6,7 @@ from utils.config import (
     MAX_USER_MESSAGES,
     MESSAGE_LIMIT_MESSAGE,
 )
+from utils.session_store import get_message_feedbacks, save_message_feedback
 
 
 def _build_markdown_report(track_name, genre, audio_data, stem_data, chat_history):
@@ -81,6 +82,8 @@ def render_chat(
     track_name="Трек",
     audio_data=None,
     stem_data=None,
+    session_id=None,
+    user_id=None,
 ):
     if "pendingai_request" not in st.session_state:
         st.session_state.pendingai_request = False
@@ -98,11 +101,57 @@ def render_chat(
     if message_limit_reached:
         st.info(MESSAGE_LIMIT_MESSAGE)
 
+    feedback_by_message = (
+        get_message_feedbacks(session_id, user_id)
+        if session_id and user_id
+        else {}
+    )
     chat_box = st.container(height=600)
     with chat_box:
-        for message in chat_history:
+        for message_index, message in enumerate(chat_history):
             with st.chat_message(message["role"]):
                 st.write(message["content"])
+                if (
+                    message["role"] == "assistant"
+                    and session_id
+                    and user_id
+                ):
+                    feedback_columns = st.columns([1, 1, 8])
+                    for column, rating, label, help_text in (
+                        (
+                            feedback_columns[0],
+                            "positive",
+                            "👍",
+                            "Полезный ответ",
+                        ),
+                        (
+                            feedback_columns[1],
+                            "negative",
+                            "👎",
+                            "Неполезный ответ",
+                        ),
+                    ):
+                        if column.button(
+                            label,
+                            key=f"feedback_{session_id}_{message_index}_{rating}",
+                            help=help_text,
+                            type=(
+                                "primary"
+                                if feedback_by_message.get(message_index) == rating
+                                else "secondary"
+                            ),
+                        ):
+                            try:
+                                save_message_feedback(
+                                    session_id,
+                                    user_id,
+                                    message_index,
+                                    rating,
+                                )
+                            except ValueError as error:
+                                st.error(str(error))
+                            else:
+                                st.toast("Спасибо за фидбек!")
 
     report = _build_markdown_report(
         track_name,

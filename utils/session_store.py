@@ -50,6 +50,17 @@ def _connect():
             connection.execute(
                 f"ALTER TABLE sessions ADD COLUMN {column_name} {declaration}"
             )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS message_feedback (
+            session_id TEXT NOT NULL,
+            message_index INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            rating TEXT NOT NULL CHECK (rating IN ('positive', 'negative')),
+            PRIMARY KEY (session_id, message_index)
+        )
+        """
+    )
     connection.commit()
     return connection
 
@@ -250,6 +261,10 @@ def rename_session(session_id, user_id, display_name):
 def delete_session(session_id, user_id):
     connection = _connect()
     try:
+        connection.execute(
+            "DELETE FROM message_feedback WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        )
         cursor = connection.execute(
             "DELETE FROM sessions WHERE id = ? AND user_id = ?",
             (session_id, user_id),
@@ -257,5 +272,63 @@ def delete_session(session_id, user_id):
         if cursor.rowcount == 0:
             raise ValueError("Сессия не найдена.")
         connection.commit()
+    finally:
+        connection.close()
+
+
+def save_message_feedback(session_id, user_id, message_index, rating):
+    if rating not in {"positive", "negative"}:
+        raise ValueError("Неизвестная оценка сообщения.")
+
+    connection = _connect()
+    try:
+        row = connection.execute(
+            "SELECT chat_history_json FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Сессия не найдена.")
+
+        chat_history = json.loads(row["chat_history_json"])
+        if (
+            message_index < 0
+            or message_index >= len(chat_history)
+            or chat_history[message_index].get("role") != "assistant"
+        ):
+            raise ValueError("Ответ ИИ для оценки не найден.")
+
+        connection.execute(
+            """
+            INSERT INTO message_feedback (session_id, message_index, user_id, rating)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(session_id, message_index) DO UPDATE SET
+                user_id = excluded.user_id,
+                rating = excluded.rating
+            WHERE message_feedback.user_id = excluded.user_id
+            """,
+            (session_id, message_index, user_id, rating),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def get_message_feedbacks(session_id, user_id):
+    connection = _connect()
+    try:
+        return {
+            row["message_index"]: row["rating"]
+            for row in connection.execute(
+                """
+                SELECT feedback.message_index, feedback.rating
+                FROM message_feedback AS feedback
+                JOIN sessions ON sessions.id = feedback.session_id
+                WHERE feedback.session_id = ?
+                  AND feedback.user_id = ?
+                  AND sessions.user_id = ?
+                """,
+                (session_id, user_id, user_id),
+            )
+        }
     finally:
         connection.close()
