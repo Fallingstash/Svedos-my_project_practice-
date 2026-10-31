@@ -172,6 +172,9 @@ Decay, Room Size и подобные. Вместо High Pass или Low Cut пи
 
 Используй простой связный ответ с естественными абзацами и уместным форматированием Markdown.
 Не требуй фиксированного числа пунктов или шагов и не превращай ответ в технический отчёт.
+Отвечай кратко и по делу. Максимум 150 слов. Используй маркированные списки.
+Если трек звучит хорошо, просто похвали его в 1-2 предложениях и скажи, что не видишь
+критических проблем. Не пиши длинные абзацы и не повторяй цифры из измерений.
 {stem_instruction}
 {segment_text}"""
 
@@ -232,6 +235,7 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
         response = get_client().chat.completions.create(
             model=MODEL,
             messages=get_chat_messages(system_prompt, user_prompt, chat_history),
+            max_tokens=350,
         )
     except OpenAIError as error:
         raise AIRequestError(f"Не удалось получить ответ от ИИ: {error}") from error

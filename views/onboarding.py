@@ -26,6 +26,13 @@ def render_onboarding(segments):
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
+            vibe_description = st.text_area(
+                "Опиши свои мысли о треке (вайб, замысел, что изменил)",
+                placeholder="Расскажи о желаемом звучании, замысле или внесённых изменениях",
+                max_chars=500,
+                height=160,
+                key="onboarding_vibe_input",
+            )
             ref_file = st.file_uploader(
                 "Загрузите референс (опционально)",
                 type=["mp3", "wav"],
@@ -42,12 +49,13 @@ def render_onboarding(segments):
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
-        vibe_description = st.text_area(
-            "Опиши свой вайб / цель",
-            placeholder="Например: хочу мрачный трэп с грязным звуком",
-            max_chars=500,
-            key="onboarding_vibe_input",
-        )
+            vibe_description = st.text_area(
+                "Опиши свои мысли о треке (вайб, замысел, что изменил)",
+                placeholder="Расскажи о желаемом звучании, замысле или внесённых изменениях",
+                max_chars=500,
+                height=160,
+                key="onboarding_vibe_input",
+            )
         genre = st.selectbox("Жанр", ["Рэп", "Хип-Хоп", "Поп", "Лоу-фай"])
         analyze_clicked = st.form_submit_button("🚀 Начать анализ", type="primary")
 

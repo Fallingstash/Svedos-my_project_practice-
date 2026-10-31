@@ -20,22 +20,6 @@ def render_settings(segments, current_vibe=""):
     st.write("**Обновить трек / Добавить референс:**")
     if st.session_state.get("session_vibe_input") is None:
         st.session_state.session_vibe_input = current_vibe
-    vibe_description = st.text_area(
-        "Опиши свой вайб / цель",
-        placeholder="Например: хочу мрачный трэп с грязным звуком",
-        max_chars=500,
-        key="session_vibe_input",
-    )
-    version_comment = st.text_area(
-        "Комментарий к новой версии (что изменил?)",
-        placeholder="Например: поднял верха и убрал гул в низах",
-        max_chars=500,
-        key=(
-            f"settings_new_version_comment_"
-            f"{st.session_state.session_id}_"
-            f"{st.session_state.get('settings_comment_generation', 0)}"
-        ),
-    )
     analysis_mode = st.radio(
         "Что анализировать",
         ("master", "stems"),
@@ -71,6 +55,13 @@ def render_settings(segments, current_vibe=""):
             key="settings_vocal",
             max_upload_size=MAX_UPLOAD_SIZE_MB,
         )
+    vibe_description = st.text_area(
+        "Опиши свои мысли о треке (вайб, замысел, что изменил)",
+        placeholder="Расскажи о желаемом звучании, замысле или внесённых изменениях",
+        max_chars=500,
+        height=160,
+        key="session_vibe_input",
+    )
     apply_changes = st.button(
         "✅ Применить и вернуться в чат",
         type="primary",
@@ -91,6 +82,5 @@ def render_settings(segments, current_vibe=""):
             "beat": new_beat,
             "vocal": new_vocal,
             "vibe_description": vibe_description.strip(),
-            "version_comment": version_comment.strip(),
         }
     return None

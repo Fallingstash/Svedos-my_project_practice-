@@ -54,7 +54,6 @@ SESSION_DEFAULTS = {
     "last_ai_request_at": None,
     "chat_upload_generation": 0,
     "renaming_session_id": None,
-    "settings_comment_generation": 0,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -391,6 +390,12 @@ if not st.session_state.analyzed:
                 "и дай конкретные советы, как освободить место для голоса."
             )
         st.session_state.analyzed = True
+        initial_question = (
+            f"{initial_question}\nМои мысли о треке: "
+            f"{st.session_state.vibe_description}"
+            if st.session_state.vibe_description
+            else initial_question
+        )
         queue_ai_request(
             initial_question,
             "initial",
@@ -456,9 +461,7 @@ else:
                         settings_result["vocal"],
                         "vocal",
                     )
-
                 st.session_state.analysis_mode = settings_result["analysis_mode"]
-                st.session_state.settings_comment_generation += 1
                 previous_track_for_graph = (
                     old_track_path
                     if (
@@ -467,22 +470,23 @@ else:
                     )
                     else None
                 )
-                update_comment = settings_result["version_comment"]
                 if new_version_uploaded:
                     update_question = (
                         "Я только что загрузил новую версию трека после правок."
                     )
-                    if update_comment:
-                        update_question += f" {update_comment}"
-                    else:
-                        update_question += (
-                            " Оцени, что изменилось и что попробовать дальше."
-                        )
                 else:
                     update_question = (
-                        update_comment
-                        or "Я обновил настройки. Оцени текущий трек и подскажи, "
+                        "Я обновил настройки. Оцени текущий трек и подскажи, "
                         "что попробовать дальше."
+                    )
+                if st.session_state.vibe_description:
+                    update_question += (
+                        f"\nМои мысли о треке: "
+                        f"{st.session_state.vibe_description}"
+                    )
+                elif new_version_uploaded:
+                    update_question += (
+                        " Оцени, что изменилось и что попробовать дальше."
                     )
                 if st.session_state.analysis_mode == "stems":
                     if not st.session_state.beat_path or not st.session_state.vocal_path:
