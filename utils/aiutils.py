@@ -6,7 +6,7 @@ from openai import OpenAI
 from openai import OpenAIError
 
 
-MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
 load_dotenv()
 
