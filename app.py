@@ -294,7 +294,7 @@ def process_pending_ai_request(payload):
         round(used_messages / MAX_USER_MESSAGES * 100),
     )
     thinking_label = (
-        f"ИИ анализирует... (Использовано {usage_percent}% бесплатного лимита)"
+        f"ИИ слушает ваш трек..."
     )
     if payload["kind"] == "consolidation":
         system_prompt, user_prompt = get_consolidation_prompt(

@@ -1,4 +1,4 @@
-MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+MODEL = "nvidia/nemotron-3.5-super-vl:free"
 MAX_AI_TOKENS = 350
 AI_UNAVAILABLE_MESSAGE = (
     "Наш ИИ-наставник временно недоступен. Пожалуйста, попробуйте позже "
@@ -19,8 +19,7 @@ RATE_LIMIT_MESSAGE = "Не так быстро! Подождите нескол�
 MAX_USER_MESSAGES = 10
 MAX_CHAT_MESSAGE_CHARS = 500
 MESSAGE_LIMIT_MESSAGE = (
-    "✨ Бесплатные сообщения закончились. Подключите пакет сообщений, "
-    "чтобы продолжить."
+    "Лимит бесплатных сообщений исчерпан."
 )
 MESSAGE_TOO_LONG_MESSAGE = (
     "Сообщение слишком длинное. Максимум — 500 символов."

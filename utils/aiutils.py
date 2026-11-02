@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -11,6 +12,36 @@ from utils.config import AI_UNAVAILABLE_MESSAGE, MAX_AI_TOKENS, MODEL
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+
+def _safe_provider_error(error):
+    body = getattr(error, "body", None)
+    if not isinstance(body, dict):
+        return "Подробности ответа провайдера недоступны"
+
+    details = body.get("error", body)
+    if not isinstance(details, dict):
+        return "Подробности ответа провайдера недоступны"
+
+    error_code = details.get("code")
+    message = details.get("message")
+    if not message:
+        return f"provider_code={error_code}" if error_code else (
+            "Подробности ответа провайдера недоступны"
+        )
+
+    safe_message = str(message)[:500]
+    api_key = os.getenv("API_KEY")
+    if api_key:
+        safe_message = safe_message.replace(api_key, "[REDACTED]")
+    safe_message = re.sub(
+        r"\bsk-(?:or-v1-)?[A-Za-z0-9_-]{8,}\b",
+        "[REDACTED]",
+        safe_message,
+    )
+    if error_code:
+        return f"provider_code={error_code}; message={safe_message}"
+    return safe_message
 
 
 class AIRequestError(Exception):
@@ -67,6 +98,7 @@ def get_client():
         except FileNotFoundError:
             api_key = None
     if not api_key:
+        logger.error("OpenRouter API_KEY is not configured")
         raise AIRequestError(AI_UNAVAILABLE_MESSAGE)
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -272,9 +304,11 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
             max_tokens=MAX_AI_TOKENS,
         )
     except OpenAIError as error:
-        logger.warning(
-            "OpenRouter request failed (status=%s)",
-            getattr(error, "status_code", "connection_error"),
+        logger.error(
+            "OpenRouter request failed: status=%s error_type=%s details=%s",
+            getattr(error, "status_code", None) or "connection_error",
+            type(error).__name__,
+            _safe_provider_error(error),
         )
         raise AIRequestError(AI_UNAVAILABLE_MESSAGE) from error
 

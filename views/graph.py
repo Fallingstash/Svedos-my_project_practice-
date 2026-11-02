@@ -111,8 +111,8 @@ def render_graph(
                         ),
                         (
                             "Пиковый LUFS (максимальный)",
-                            f"{stem['max_short_term_lufs']:.1f}"
-                            if stem["max_short_term_lufs"] is not None
+                            f"{stem.get('max_short_term_lufs'):.1f}"
+                            if stem.get("max_short_term_lufs") is not None
                             else "Недостаточно длины",
                         ),
                         ("True Peak", f"{stem['true_peak_db']:.1f} dBTP"),
@@ -147,8 +147,8 @@ def render_graph(
                     ),
                     (
                         "Пиковый LUFS (максимальный)",
-                        f"{audio_data['max_short_term_lufs']:.1f}"
-                        if audio_data["max_short_term_lufs"] is not None
+                        f"{audio_data.get('max_short_term_lufs'):.1f}"
+                        if audio_data.get("max_short_term_lufs") is not None
                         else "Недостаточно длины",
                     ),
                     ("Пиковый уровень (dBFS)", f"{audio_data['max_peak_db']:.1f}"),
@@ -209,8 +209,8 @@ def render_graph(
                                 ),
                                 (
                                     "Пиковый LUFS (максимальный)",
-                                    f"{metrics['max_short_term_lufs']:.1f}"
-                                    if metrics["max_short_term_lufs"] is not None
+                                    f"{metrics.get('max_short_term_lufs'):.1f}"
+                                    if metrics.get("max_short_term_lufs") is not None
                                     else "Недостаточно длины",
                                 ),
                                 (
