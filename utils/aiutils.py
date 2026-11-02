@@ -191,6 +191,15 @@ def get_strict_prompt(
 При анализе сегментов сравнивай уровень вокала отдельно в каждом участке. Если данные показывают,
 что вокал в одной части заметно тише, можешь предложить проверить автоматизацию его громкости."""
 
+    try:
+        segment_data_text = _format_segment_data(segment_data)
+    except (KeyError, TypeError, ValueError, OverflowError) as error:
+        logger.exception("Failed to format segment metrics for AI prompt")
+        st.error(f"Не удалось подготовить метрики сегментов: {error}")
+        raise AIRequestError(
+            "Не удалось подготовить данные сегментов для анализа."
+        ) from error
+
     source_description = (
         "отдельные стемы — бит и вокал"
         if analysis_mode == "stems"
@@ -310,7 +319,7 @@ Fruity Parametric EQ 2: пологий подъём высоких частот 
 {stem_data or "Отдельные стемы не переданы."}
 
 Данные по сегментам (каждый фрагмент анализировался отдельно):
-{_format_segment_data(segment_data)}
+{segment_data_text}
 
 Сравнение с ориентировочной кривой жанра:
 {genre_delta or "Сравнение с жанровой кривой не передано."}
@@ -340,25 +349,12 @@ def get_consolidation_prompt(genre_name):
 
 
 def request_ai_response(system_prompt, user_prompt, chat_history=None):
-    response_text = []
-    finish_reason = None
     try:
         response = get_client().chat.completions.create(
             model=MODEL,
             messages=get_chat_messages(system_prompt, user_prompt, chat_history),
             max_tokens=MAX_AI_TOKENS,
-            stream=True,
         )
-        for chunk in response:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            content = choice.delta.content
-            if content:
-                response_text.append(content)
-                yield content
     except OpenAIError as error:
         status_code = getattr(error, "status_code", None)
         safe_details = _safe_provider_error(error)
@@ -370,21 +366,28 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
         )
         raise AIRequestError(_format_api_failure(error)) from error
 
-    if not response_text:
-        if finish_reason == "length":
+    if not response.choices:
+        logger.error("OpenRouter returned no choices")
+        raise AIRequestError("OpenRouter вернул ответ без вариантов (choices).")
+
+    choice = response.choices[0]
+    answer = choice.message.content
+    if not answer:
+        if choice.finish_reason == "length":
             logger.warning(
                 "OpenRouter exhausted completion token limit (max_tokens=%s)",
                 MAX_AI_TOKENS,
             )
             raise AIRequestError(
                 "Модель израсходовала лимит токенов до формирования ответа. "
-                "Повторите запрос; лимит генерации увеличен."
+                "Попробуйте сократить запрос или повторить его."
             )
         logger.error(
             "OpenRouter returned empty content (finish_reason=%s)",
-            finish_reason,
+            choice.finish_reason,
         )
         raise AIRequestError(
             "OpenRouter вернул пустой текст ответа "
-            f"(причина завершения: {finish_reason or 'не указана'})."
+            f"(причина завершения: {choice.finish_reason or 'не указана'})."
         )
+    return answer

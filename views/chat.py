@@ -22,13 +22,8 @@ def _show_purchase_dialog():
 def _process_pending_request(chat_history, process_pending_request, save_history):
     payload = st.session_state.pendingai_payload
     try:
-        response = process_pending_request(payload)
-        with st.chat_message("assistant"):
-            if isinstance(response, str):
-                answer = response
-                st.write(answer)
-            else:
-                answer = st.write_stream(response)
+        with st.spinner("ИИ анализирует..."):
+            answer = process_pending_request(payload)
     except (AIRequestError, ValueError) as error:
         st.session_state.pendingai_error = str(error)
     else:
