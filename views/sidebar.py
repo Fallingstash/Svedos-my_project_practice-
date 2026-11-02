@@ -55,6 +55,8 @@ def _activate_session(session_id):
     st.session_state.pendingai_request = False
     st.session_state.pendingai_payload = None
     st.session_state.pendingai_error = None
+    st.session_state.sessionto_manage = None
+    st.session_state.session_delete_confirmation_id = None
     st.session_state.old_spectrum = None
     st.session_state.old_frequencies = None
     st.session_state.view_mode = "chat"
@@ -87,7 +89,8 @@ def _start_new_session():
         "pendingai_request": False,
         "pendingai_payload": None,
         "pendingai_error": None,
-        "renaming_session_id": None,
+        "sessionto_manage": None,
+        "session_delete_confirmation_id": None,
         "chat_upload_generation": 0,
     }
     for key, value in defaults.items():
@@ -96,66 +99,118 @@ def _start_new_session():
     st.rerun()
 
 
+@st.dialog("Управление сессией")
+def _manage_session_dialog(session_id):
+    session = load_session(session_id, st.session_state.user_id)
+    if session is None:
+        st.error("Не удалось найти выбранную сессию.")
+        if st.button("Закрыть", key="close_missing_session_dialog"):
+            st.session_state.sessionto_manage = None
+            st.rerun()
+        return
+
+    session_name = session["display_name"] or session["track_name"]
+    edited_name = st.text_input(
+        "Название сессии",
+        value=session_name,
+        key=f"manage_session_name_{session_id}",
+    )
+    open_col, save_col = st.columns(2)
+    if open_col.button(
+        "Открыть",
+        key=f"manage_open_session_{session_id}",
+        use_container_width=True,
+    ):
+        st.session_state.sessionto_manage = None
+        _activate_session(session_id)
+
+    if save_col.button(
+        "Сохранить имя",
+        key=f"manage_save_session_{session_id}",
+        use_container_width=True,
+    ):
+        try:
+            rename_session(session_id, st.session_state.user_id, edited_name)
+        except ValueError as error:
+            st.error(str(error))
+        else:
+            if session_id == st.session_state.session_id:
+                st.session_state.display_name = edited_name.strip()
+            st.session_state.sessionto_manage = None
+            st.session_state.session_delete_confirmation_id = None
+            st.rerun()
+
+    if st.button(
+        "Удалить",
+        key=f"manage_delete_session_{session_id}",
+        type="secondary",
+        use_container_width=True,
+    ):
+        st.session_state.session_delete_confirmation_id = session_id
+
+    if st.session_state.session_delete_confirmation_id == session_id:
+        st.warning(f"Удалить диалог «{session_name}»? Это действие нельзя отменить.")
+        confirm_col, cancel_delete_col = st.columns(2)
+        if confirm_col.button(
+            "Да, удалить",
+            key=f"confirm_manage_delete_{session_id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                delete_session(session_id, st.session_state.user_id)
+            except ValueError as error:
+                st.error(str(error))
+            else:
+                st.session_state.sessionto_manage = None
+                st.session_state.session_delete_confirmation_id = None
+                if session_id == st.session_state.session_id:
+                    _start_new_session()
+                st.rerun()
+        if cancel_delete_col.button(
+            "Не удалять",
+            key=f"cancel_manage_delete_{session_id}",
+            use_container_width=True,
+        ):
+            st.session_state.session_delete_confirmation_id = None
+            st.rerun()
+
+    if st.button(
+        "Отмена",
+        key=f"cancel_manage_session_{session_id}",
+        use_container_width=True,
+    ):
+        st.session_state.sessionto_manage = None
+        st.session_state.session_delete_confirmation_id = None
+        st.rerun()
+
+
 def render_sidebar():
     with st.sidebar:
-        if "renaming_session_id" not in st.session_state:
-            st.session_state.renaming_session_id = None
+        if "sessionto_manage" not in st.session_state:
+            st.session_state.sessionto_manage = None
+        if "session_delete_confirmation_id" not in st.session_state:
+            st.session_state.session_delete_confirmation_id = None
         st.header("Мои сессии")
         if st.button("➕ Новая сессия", use_container_width=True):
             _start_new_session()
 
-        for session in list_sessions(st.session_state.user_id):
+        sessions = list_sessions(st.session_state.user_id)
+        for session in sessions:
             is_active = session["id"] == st.session_state.session_id
             label = _session_label(session)
-            session_name = session["display_name"] or session["track_name"]
-            button_col, rename_col, delete_col = st.columns([7, 1, 1])
-            if button_col.button(
-                f"{'▶ ' if is_active else ''}{label}",
+            if st.button(
+                f"{'📍 ' if is_active else ''}{label}",
                 key=f"open_session_{session['id']}",
                 use_container_width=True,
-                help=session_name,
             ):
-                _activate_session(session["id"])
-
-            if rename_col.button(
-                "✏️",
-                key=f"rename_open_{session['id']}",
-                help="Переименовать сессию",
-                use_container_width=True,
-            ):
-                st.session_state.renaming_session_id = session["id"]
+                st.session_state[f"manage_session_name_{session['id']}"] = (
+                    session["display_name"] or session["track_name"]
+                )
+                st.session_state.sessionto_manage = session["id"]
+                st.session_state.session_delete_confirmation_id = None
                 st.rerun()
 
-            if delete_col.button(
-                "🗑️",
-                key=f"delete_session_{session['id']}",
-                help="Удалить сессию",
-                use_container_width=True,
-            ):
-                try:
-                    delete_session(session["id"], st.session_state.user_id)
-                except ValueError as error:
-                    st.error(str(error))
-                else:
-                    if is_active:
-                        _start_new_session()
-                    st.rerun()
-
-            if st.session_state.renaming_session_id == session["id"]:
-                with st.form(f"rename_form_{session['id']}"):
-                    edited_name = st.text_input("Название", value=session_name)
-                    save_name = st.form_submit_button("Сохранить")
-                if save_name:
-                    try:
-                        rename_session(
-                            session["id"],
-                            st.session_state.user_id,
-                            edited_name,
-                        )
-                    except ValueError as error:
-                        st.error(str(error))
-                    else:
-                        if is_active:
-                            st.session_state.display_name = edited_name.strip()
-                        st.session_state.renaming_session_id = None
-                        st.rerun()
+    session_id_to_manage = st.session_state.sessionto_manage
+    if session_id_to_manage:
+        _manage_session_dialog(session_id_to_manage)

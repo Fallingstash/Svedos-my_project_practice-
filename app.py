@@ -63,7 +63,8 @@ SESSION_DEFAULTS = {
     "pendingai_payload": None,
     "pendingai_error": None,
     "chat_upload_generation": 0,
-    "renaming_session_id": None,
+    "sessionto_manage": None,
+    "session_delete_confirmation_id": None,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -285,56 +286,40 @@ def request_analysis(
 
 
 def process_pending_ai_request(payload):
-    used_messages = sum(
-        message["role"] == "user"
-        for message in st.session_state.chat_history
-    )
-    usage_percent = min(
-        100,
-        round(used_messages / MAX_USER_MESSAGES * 100),
-    )
-    thinking_label = (
-        f"ИИ слушает ваш трек..."
-    )
     if payload["kind"] == "consolidation":
         system_prompt, user_prompt = get_consolidation_prompt(
             st.session_state.genre
         )
-        with st.status(thinking_label, expanded=False) as status:
-            st.info(f"💡 Факт о звуке: {random.choice(AUDIO_FACTS)}")
-            answer = request_ai_response(
-                system_prompt,
-                user_prompt,
-                st.session_state.chat_history[:-1],
-            )
-            status.update(label="Ответ готов", state="complete", expanded=False)
-        return answer
-
-    with st.status("Слушаю трек...", expanded=True) as status:
-        previous_track_path = payload.get("previous_track_path")
-        if previous_track_path:
-            previous_audio = analyze_audio_file(
-                previous_track_path,
-                analysis_segments(),
-            )
-            st.session_state.old_spectrum = previous_audio["spectrum"]
-            st.session_state.old_frequencies = previous_audio["frequencies"]
-
-        status.update(label="Считаю частоты...", state="running")
-        audio_data, stem_data = analyze_current_source()
-        reference_delta = get_reference_delta(audio_data)
-        status.update(label=thinking_label, state="running")
-        st.info(f"💡 Факт о звуке: {random.choice(AUDIO_FACTS)}")
-        answer = request_analysis(
-            payload["question"],
-            audio_data,
+        st.markdown(f"💡 **Факт о звуке:** {random.choice(AUDIO_FACTS)}")
+        return request_ai_response(
+            system_prompt,
+            user_prompt,
             st.session_state.chat_history[:-1],
-            reference_delta,
-            stem_data,
-            payload.get("new_version", False),
         )
-        status.update(label="Ответ готов", state="complete", expanded=False)
-        return answer
+
+    st.caption("Слушаю ваш трек...")
+    previous_track_path = payload.get("previous_track_path")
+    if previous_track_path:
+        previous_audio = analyze_audio_file(
+            previous_track_path,
+            analysis_segments(),
+        )
+        st.session_state.old_spectrum = previous_audio["spectrum"]
+        st.session_state.old_frequencies = previous_audio["frequencies"]
+
+    st.caption("Считаю частоты...")
+    audio_data, stem_data = analyze_current_source()
+    reference_delta = get_reference_delta(audio_data)
+    st.markdown(f"💡 **Факт о звуке:** {random.choice(AUDIO_FACTS)}")
+    st.caption("ИИ анализирует трек...")
+    return request_analysis(
+        payload["question"],
+        audio_data,
+        st.session_state.chat_history[:-1],
+        reference_delta,
+        stem_data,
+        payload.get("new_version", False),
+    )
 
 
 def queue_ai_request(
@@ -458,6 +443,14 @@ else:
             settings_result = render_settings(
                 st.session_state.segments,
                 st.session_state.vibe_description,
+                track_name=(
+                    st.session_state.display_name
+                    or st.session_state.track_name
+                ),
+                genre=st.session_state.genre,
+                audio_data=current_audio,
+                stem_data=current_stem_data,
+                chat_history=st.session_state.chat_history,
             )
 
             if settings_result and settings_result["action"] == "segments_updated":
@@ -562,12 +555,6 @@ else:
                 st.session_state.genre,
                 process_pending_ai_request,
                 persist_current_session,
-                track_name=(
-                    st.session_state.display_name
-                    or st.session_state.track_name
-                ),
-                audio_data=current_audio,
-                stem_data=current_stem_data,
                 session_id=st.session_state.session_id,
                 user_id=st.session_state.user_id,
             )

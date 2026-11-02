@@ -19,59 +19,16 @@ def _show_purchase_dialog():
     )
 
 
-def _build_markdown_report(track_name, genre, audio_data, stem_data, chat_history):
-    lines = [
-        f"# Отчёт по треку: {track_name}",
-        "",
-        f"**Жанр:** {genre}",
-        "",
-    ]
-    if stem_data:
-        for label, stem in (
-            ("Бит", stem_data["beat"]),
-            ("Вокал", stem_data["vocal"]),
-        ):
-            peaks = stem.get("top_peaks", [])[:3]
-            peak_text = ", ".join(
-                f"{frequency:.0f} Гц ({db:.1f} дБ)" for frequency, db in peaks
-            ) or "не обнаружены"
-            lines.extend(
-                [
-                    f"## {label}",
-                    f"- Топ-3 пика: {peak_text}",
-                    f"- LUFS: {stem['loudness']:.1f}",
-                    f"- True Peak: {stem['true_peak_db']:.1f} dBTP",
-                    "",
-                ]
-            )
-    elif audio_data:
-        peaks = audio_data.get("top_peaks", [])[:3]
-        peak_text = ", ".join(
-            f"{frequency:.0f} Гц ({db:.1f} дБ)" for frequency, db in peaks
-        ) or "не обнаружены"
-        lines.extend(
-            [
-                "## Метрики",
-                f"- Топ-3 пика: {peak_text}",
-                f"- LUFS: {audio_data['loudness']:.1f}",
-                f"- True Peak: {audio_data['true_peak_db']:.1f} dBTP",
-                "",
-            ]
-        )
-    else:
-        lines.extend(["## Метрики", "Данные анализа пока недоступны.", ""])
-
-    lines.extend(["## История переписки", ""])
-    for message in chat_history:
-        speaker = "Вы" if message["role"] == "user" else "ИИ-наставник"
-        lines.extend([f"### {speaker}", message["content"], ""])
-    return "\n".join(lines)
-
-
 def _process_pending_request(chat_history, process_pending_request, save_history):
     payload = st.session_state.pendingai_payload
     try:
-        answer = process_pending_request(payload)
+        response = process_pending_request(payload)
+        with st.chat_message("assistant"):
+            if isinstance(response, str):
+                answer = response
+                st.write(answer)
+            else:
+                answer = st.write_stream(response)
     except (AIRequestError, ValueError) as error:
         st.session_state.pendingai_error = str(error)
     else:
@@ -89,9 +46,6 @@ def render_chat(
     genre,
     process_pending_request=None,
     save_history=None,
-    track_name="Трек",
-    audio_data=None,
-    stem_data=None,
     session_id=None,
     user_id=None,
 ):
@@ -172,21 +126,6 @@ def render_chat(
                             else:
                                 st.toast("Спасибо за фидбек!")
 
-    report = _build_markdown_report(
-        track_name,
-        genre,
-        audio_data,
-        stem_data,
-        chat_history,
-    )
-    st.download_button(
-        "📥 Скачать отчет (Markdown)",
-        data=report,
-        file_name="svedos_report.md",
-        mime="text/markdown",
-        use_container_width=True,
-    )
-
     if st.session_state.pendingai_request:
         if process_pending_request is None or save_history is None:
             st.error("Для обработки ожидающего запроса не настроен обработчик ИИ.")
@@ -197,24 +136,20 @@ def render_chat(
         remaining_percent / 100,
         text=f"Остаток бесплатного лимита: {remaining_percent}%",
     )
-    col_input, col_settings = st.columns([9, 1], vertical_alignment="bottom")
-    with col_input:
-        user_question = st.chat_input(
-            "Задай вопрос...",
-            max_chars=MAX_CHAT_MESSAGE_CHARS,
-            disabled=message_limit_reached,
-        )
-    with col_settings:
-        settings_clicked = st.button(
-            "⚙️",
-            key="chat_settings_button",
-            use_container_width=True,
-            disabled=message_limit_reached,
-        )
+    user_question = st.chat_input(
+        "Задай вопрос...",
+        max_chars=MAX_CHAT_MESSAGE_CHARS,
+        disabled=message_limit_reached,
+    )
 
     consolidate_clicked = st.button(
         "📘 Закрепить знания",
         disabled=not chat_history or message_limit_reached,
+        use_container_width=True,
+    )
+    settings_clicked = st.button(
+        "⚙️ Настройки трека",
+        key="chat_settings_button",
         use_container_width=True,
     )
 

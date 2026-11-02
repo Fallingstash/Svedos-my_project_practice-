@@ -80,7 +80,11 @@ def save_session(session):
             ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 track_name = excluded.track_name,
-                display_name = excluded.display_name,
+                display_name = CASE
+                    WHEN sessions.display_name = sessions.track_name
+                    THEN excluded.display_name
+                    ELSE sessions.display_name
+                END,
                 genre = excluded.genre,
                 updated_at = excluded.updated_at,
                 track_path = excluded.track_path,
