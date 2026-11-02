@@ -1,5 +1,5 @@
-MODEL = "nvidia/nemotron-3.5-super-vl:free"
-MAX_AI_TOKENS = 350
+MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free" # не меняем, показывает хороший результат
+MAX_AI_TOKENS = 2000
 AI_UNAVAILABLE_MESSAGE = (
     "Наш ИИ-наставник временно недоступен. Пожалуйста, попробуйте позже "
     "или выберите другую модель."
