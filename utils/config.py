@@ -1,4 +1,4 @@
-MODEL = "nvidia/nemotron-3-ultra-550b-a55b"
+MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 MAX_AI_TOKENS = 350
 AI_UNAVAILABLE_MESSAGE = (
     "Наш ИИ-наставник временно недоступен. Пожалуйста, попробуйте позже "
