@@ -3,22 +3,12 @@ from pathlib import Path
 
 import streamlit as st
 
-from utils.config import MAX_USER_MESSAGES
 from utils.session_store import (
     delete_session,
     list_sessions,
     load_session,
     rename_session,
 )
-
-
-@st.dialog("🚀 Upgrade Plan")
-def _show_upgrade_dialog():
-    st.write(
-        "Лимит бесплатных сессий исчерпан. Купите 10 полноценных разборов "
-        "треков за 199₽."
-    )
-    st.button("Оплата скоро появится", disabled=True, use_container_width=True)
 
 
 def _session_label(session):
@@ -110,20 +100,6 @@ def render_sidebar():
     with st.sidebar:
         if "renaming_session_id" not in st.session_state:
             st.session_state.renaming_session_id = None
-        st.subheader("Ваш тариф: FREE")
-        used_messages = sum(
-            message["role"] == "user"
-            for message in st.session_state.chat_history
-        )
-        remaining_messages = max(0, MAX_USER_MESSAGES - used_messages)
-        remaining_percent = round(remaining_messages / MAX_USER_MESSAGES * 100)
-        st.progress(
-            remaining_percent / 100,
-            text=f"Осталось сообщений: {remaining_percent}%",
-        )
-        if st.button("🚀 Upgrade Plan", use_container_width=True):
-            _show_upgrade_dialog()
-
         st.header("Мои сессии")
         if st.button("➕ Новая сессия", use_container_width=True):
             _start_new_session()

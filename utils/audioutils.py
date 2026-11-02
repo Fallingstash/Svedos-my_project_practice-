@@ -275,6 +275,22 @@ def _short_term_lufs(mono_audio, sample_rate):
     return float(np.var(finite_measurements))
 
 
+def _max_short_term_lufs(mono_audio, sample_rate):
+    window_size = LUFS_WINDOW_SECONDS * sample_rate
+    if len(mono_audio) < window_size:
+        return None
+
+    meter = pyln.Meter(sample_rate)
+    measurements = [
+        meter.integrated_loudness(mono_audio[start : start + window_size])
+        for start in range(0, len(mono_audio) - window_size + 1, sample_rate)
+    ]
+    finite_measurements = [
+        measurement for measurement in measurements if np.isfinite(measurement)
+    ]
+    return max(finite_measurements) if finite_measurements else None
+
+
 def _analyze_audio(audio, sample_rate, segments=()):
     source_audio = audio
     selected_audio, analysis_context = _prepare_audio(audio, sample_rate, segments)
@@ -347,9 +363,15 @@ def _analyze_audio(audio, sample_rate, segments=()):
     crest_factor = max_peak_db - rms_db
     plr = true_peak_db - loudness if np.isfinite(loudness) else None
     short_term_lufs_variance = _short_term_lufs(mono_audio, sample_rate)
+    max_short_term_lufs = _max_short_term_lufs(mono_audio, sample_rate)
 
     dynamics_lines = [
-        f"LUFS: {loudness:.1f}",
+        f"Интегральный LUFS (средний): {loudness:.1f}",
+        (
+            f"Пиковый LUFS (максимальный): {max_short_term_lufs:.1f}"
+            if max_short_term_lufs is not None
+            else "Пиковый LUFS (максимальный): недостаточно длины для окна 3 сек."
+        ),
         f"Пиковый уровень: {max_peak_db:.1f} dBFS",
         f"True Peak: {true_peak_db:.1f} dBTP",
         f"RMS: {rms_db:.1f} dBFS",
@@ -376,6 +398,7 @@ def _analyze_audio(audio, sample_rate, segments=()):
         "bands_str": bands_str,
         "dynamics_str": ". ".join(dynamics_lines) + ".",
         "loudness": loudness,
+        "max_short_term_lufs": max_short_term_lufs,
         "max_peak_db": max_peak_db,
         "true_peak_db": true_peak_db,
         "crest_factor": crest_factor,
@@ -402,6 +425,7 @@ def _analyze_audio(audio, sample_rate, segments=()):
                     "end": segment["end"],
                     "top_peaks": segment_result["top_peaks"],
                     "loudness": segment_result["loudness"],
+                    "max_short_term_lufs": segment_result["max_short_term_lufs"],
                     "true_peak_db": segment_result["true_peak_db"],
                     "crest_factor": segment_result["crest_factor"],
                     "phase_correlation": segment_result["phase_correlation"],

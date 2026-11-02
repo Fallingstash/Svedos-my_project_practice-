@@ -1,3 +1,4 @@
+import logging
 import os
 
 import streamlit as st
@@ -9,6 +10,7 @@ from utils.config import AI_UNAVAILABLE_MESSAGE, MAX_AI_TOKENS, MODEL
 
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 
 class AIRequestError(Exception):
@@ -24,11 +26,19 @@ def _format_segment_data(segment_data):
             f"{frequency:.0f} Гц"
             for frequency, _ in metrics["top_peaks"]
         ) or "выраженных пиков не найдено"
-        return (
-            f"пики: {peaks}; LUFS: {metrics['loudness']:.1f}; "
-            f"True Peak: {metrics['true_peak_db']:.1f} dBTP; "
-            f"динамика (Crest Factor): {metrics['crest_factor']:.1f} дБ"
-        )
+        formatted_metrics = [
+            f"пики: {peaks}",
+            f"интегральный LUFS: {metrics['loudness']:.1f}",
+            (
+                f"пиковый LUFS за 3 сек.: "
+                f"{metrics['max_short_term_lufs']:.1f}"
+                if metrics["max_short_term_lufs"] is not None
+                else "пиковый LUFS за 3 сек.: недостаточно длины"
+            ),
+            f"True Peak: {metrics['true_peak_db']:.1f} dBTP",
+            f"динамика (Crest Factor): {metrics['crest_factor']:.1f} дБ",
+        ]
+        return "; ".join(formatted_metrics)
 
     formatted_segments = []
     for segment in segment_data:
@@ -142,6 +152,9 @@ Decay, Room Size и подобные. Вместо High Pass или Low Cut пи
 а пользователь не описывал мрачный вайб, предложи добавить немного воздуха через
 Fruity Parametric EQ 2: пологий подъём высоких частот примерно в области 10–12 кГц.
 Учитывай замысел пользователя и не навязывай эту правку, если тёмное звучание задумано.
+Сопоставляй интегральный LUFS со значением максимального LUFS за 3-секундные окна:
+заметная разница может говорить о сильном контрасте средней и наиболее громкой части.
+Не приписывай разницу конкретно припеву или интро без измерений отдельных сегментов.
 
 Будь честен и не выдумывай недостатки ради совета. Если частотный баланс в норме, пики не критичны,
 а динамика в порядке, прямо похвали трек: «Трек звучит отлично и сбалансированно». В таком случае
@@ -259,6 +272,10 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
             max_tokens=MAX_AI_TOKENS,
         )
     except OpenAIError as error:
+        logger.warning(
+            "OpenRouter request failed (status=%s)",
+            getattr(error, "status_code", "connection_error"),
+        )
         raise AIRequestError(AI_UNAVAILABLE_MESSAGE) from error
 
     if not response.choices:

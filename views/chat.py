@@ -9,6 +9,16 @@ from utils.config import (
 from utils.session_store import get_message_feedbacks, save_message_feedback
 
 
+@st.dialog("Пакет разборов")
+def _show_purchase_dialog():
+    st.write("Купите 10 сессий с полноценными разборами за 200 руб.")
+    st.button(
+        "Оплата скоро появится",
+        disabled=True,
+        use_container_width=True,
+    )
+
+
 def _build_markdown_report(track_name, genre, audio_data, stem_data, chat_history):
     lines = [
         f"# Отчёт по треку: {track_name}",
@@ -95,11 +105,20 @@ def render_chat(
         st.error(st.session_state.pendingai_error)
         st.session_state.pendingai_error = None
 
-    message_limit_reached = sum(
+    used_messages = sum(
         message["role"] == "user" for message in chat_history
-    ) >= MAX_USER_MESSAGES
+    )
+    remaining_messages = max(0, MAX_USER_MESSAGES - used_messages)
+    remaining_percent = round(remaining_messages / MAX_USER_MESSAGES * 100)
+    message_limit_reached = remaining_messages == 0
     if message_limit_reached:
-        st.info(MESSAGE_LIMIT_MESSAGE)
+        purchase_columns = st.columns([4, 2])
+        purchase_columns[0].warning(MESSAGE_LIMIT_MESSAGE)
+        if purchase_columns[1].button(
+            "Купить 10 сессий за 200 руб",
+            use_container_width=True,
+        ):
+            _show_purchase_dialog()
 
     feedback_by_message = (
         get_message_feedbacks(session_id, user_id)
@@ -174,6 +193,10 @@ def render_chat(
             return None
         _process_pending_request(chat_history, process_pending_request, save_history)
 
+    st.progress(
+        remaining_percent / 100,
+        text=f"Остаток бесплатного лимита: {remaining_percent}%",
+    )
     col_input, col_settings = st.columns([9, 1], vertical_alignment="bottom")
     with col_input:
         user_question = st.chat_input(
