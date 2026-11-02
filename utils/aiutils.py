@@ -31,7 +31,7 @@ def _safe_provider_error(error):
         )
 
     safe_message = str(message)[:500]
-    api_key = os.getenv("API_KEY")
+    api_key = st.secrets["API_KEY"] if "API_KEY" in st.secrets else os.getenv("API_KEY") # нельзя менять, потому что то хостинг на стримлите!
     if api_key:
         safe_message = safe_message.replace(api_key, "[REDACTED]")
     safe_message = re.sub(
