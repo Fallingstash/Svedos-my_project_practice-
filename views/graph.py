@@ -4,14 +4,66 @@ import streamlit as st
 from utils.audioutils import get_genre_reference_curve
 
 
-def _render_metric_grid(metrics, columns=3):
+METRIC_HELP = {
+    "Громкость (LUFS)": (
+        "0 дБ — это цифровой потолок. Всё, что ниже — в минусе. "
+        "Стриминги (Spotify) любят -14 LUFS. Если у тебя -8, стриминг "
+        "сделает тише, и трек потеряет динамику. В FL Studio используй "
+        "Fruity Limiter на мастере, чтобы поднять громкость."
+    ),
+    "Пиковый LUFS": (
+        "Громкость самого громкого момента. Показывает, насколько припев "
+        "громче куплета."
+    ),
+    "Пиковый уровень (True Peak)": (
+        "Максимальная точка волны. Если выше 0 дБ — будет хрип (клиппинг). "
+        "Мы держим -1.0. В FL Studio смотри на индикатор в Fruity Limiter."
+    ),
+    "Фазовая корреляция": (
+        "Синхронность левого и правого каналов. Если ниже 0.2 — в моно "
+        "(телефон/клуб) бас исчезнет. Проверь стерео-расширение "
+        "(Fruity Stereo Shaper)."
+    ),
+    "Crest Factor (Динамика)": (
+        "Разница между пиком и средним. Высокий (10+) — звук дышит. "
+        "Низкий (до 6) — перегружен. В FL Studio проверь компрессор на мастере."
+    ),
+    "Спектральный центроид": (
+        "Центр тяжести спектра. Низкий — темный звук (много низов). "
+        "Высокий — яркий (много верхов)."
+    ),
+}
+
+
+def _render_metric_grid(metrics, columns=3, key_prefix="metric"):
     for offset in range(0, len(metrics), columns):
         metric_columns = st.columns(columns)
-        for column, (label, value) in zip(
-            metric_columns,
-            metrics[offset : offset + columns],
+        for column_index, (column, (label, value)) in enumerate(
+            zip(metric_columns, metrics[offset : offset + columns])
         ):
-            column.metric(label, value)
+            attached_metrics = st.session_state.setdefault("attachedmetrics", [])
+            is_attached = label in attached_metrics
+            description = METRIC_HELP.get(
+                label,
+                (
+                    f"{label} — дополнительный ориентир по анализу аудио. "
+                    "Используй его вместе с прослушиванием."
+                ),
+            )
+            with column.container(border=True):
+                st.caption(label, help=description)
+                st.markdown(f"### {value}")
+                if st.button(
+                    "✅ Прикреплено" if is_attached else "Прикрепить к чату",
+                    key=(
+                        f"attach_metric_{key_prefix}_"
+                        f"{offset + column_index}_{label}"
+                    ),
+                    disabled=is_attached,
+                    use_container_width=True,
+                ):
+                    attached_metrics.append(label)
+                    st.rerun()
 
 
 def render_graph(
@@ -26,6 +78,11 @@ def render_graph(
 ):
     with st.container(height=800):
         st.subheader("📊 Спектр трека")
+
+        if audio_path:
+            st.audio(audio_path)
+        if vocal_path:
+            st.audio(vocal_path)
 
         figure, axis = plt.subplots(figsize=(8, 4))
         axis.plot(
@@ -102,16 +159,19 @@ def render_graph(
                 _render_metric_grid(
                     [
                         (
-                            "Интегральный LUFS (средний)",
+                            "Громкость (LUFS)",
                             f"{stem['loudness']:.1f}",
                         ),
                         (
-                            "Пиковый LUFS (максимальный)",
+                            "Пиковый LUFS",
                             f"{stem.get('max_short_term_lufs'):.1f}"
                             if stem.get("max_short_term_lufs") is not None
                             else "Недостаточно длины",
                         ),
-                        ("True Peak", f"{stem['true_peak_db']:.1f} dBTP"),
+                        (
+                            "Пиковый уровень (True Peak)",
+                            f"{stem['true_peak_db']:.1f} dBTP",
+                        ),
                         (
                             "Фазовая корреляция",
                             f"{stem['phase_correlation']:.2f}",
@@ -127,7 +187,8 @@ def render_graph(
                             if stem["plr"] is not None
                             else "—",
                         ),
-                    ]
+                    ],
+                    key_prefix=f"stem_{label}",
                 )
             st.caption(
                 "Разброс LUFS за 3-секундные окна: "
@@ -138,17 +199,20 @@ def render_graph(
             _render_metric_grid(
                 [
                     (
-                        "Интегральный LUFS (средний)",
+                        "Громкость (LUFS)",
                         f"{audio_data['loudness']:.1f}",
                     ),
                     (
-                        "Пиковый LUFS (максимальный)",
+                        "Пиковый LUFS",
                         f"{audio_data.get('max_short_term_lufs'):.1f}"
                         if audio_data.get("max_short_term_lufs") is not None
                         else "Недостаточно длины",
                     ),
                     ("Пиковый уровень (dBFS)", f"{audio_data['max_peak_db']:.1f}"),
-                    ("True Peak (dBTP)", f"{audio_data['true_peak_db']:.1f}"),
+                    (
+                        "Пиковый уровень (True Peak)",
+                        f"{audio_data['true_peak_db']:.1f} dBTP",
+                    ),
                     (
                         "Фазовая корреляция",
                         f"{audio_data['phase_correlation']:.2f}",
@@ -157,7 +221,10 @@ def render_graph(
                         "Спектральный центроид",
                         f"{audio_data['spectralcentroid']:.0f} Гц",
                     ),
-                    ("Crest Factor", f"{audio_data['crest_factor']:.1f} дБ"),
+                    (
+                        "Crest Factor (Динамика)",
+                        f"{audio_data['crest_factor']:.1f} дБ",
+                    ),
                     ("Стерео-ширина", f"{audio_data['stereo_width_pct']:.1f}%"),
                     (
                         "PLR",
@@ -171,7 +238,8 @@ def render_graph(
                         if audio_data["short_term_lufs_variance"] is not None
                         else "Недостаточно длины",
                     ),
-                ]
+                ],
+                key_prefix="master",
             )
 
         if audio_data.get("segment_analyses"):
@@ -200,30 +268,29 @@ def render_graph(
                             [
                                 ("Топ-3 пика", peaks),
                                 (
-                                    "Интегральный LUFS (средний)",
+                                    "Громкость (LUFS)",
                                     f"{metrics['loudness']:.1f}",
                                 ),
                                 (
-                                    "Пиковый LUFS (максимальный)",
+                                    "Пиковый LUFS",
                                     f"{metrics.get('max_short_term_lufs'):.1f}"
                                     if metrics.get("max_short_term_lufs") is not None
                                     else "Недостаточно длины",
                                 ),
                                 (
-                                    "True Peak",
+                                    "Пиковый уровень (True Peak)",
                                     f"{metrics['true_peak_db']:.1f} dBTP",
                                 ),
                                 (
-                                    "Crest Factor",
+                                    "Crest Factor (Динамика)",
                                     f"{metrics['crest_factor']:.1f} дБ",
                                 ),
-                            ]
+                            ],
+                            key_prefix=(
+                                f"segment_{segment['name']}_"
+                                f"{source_name or 'master'}"
+                            ),
                         )
-
-        if audio_path:
-            st.audio(audio_path)
-        if vocal_path:
-            st.audio(vocal_path)
 
 
 def _format_variance(audio_data):

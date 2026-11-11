@@ -7,7 +7,10 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from openai import OpenAIError
 
-from utils.config import MAX_AI_TOKENS, MODEL
+from utils.config import (
+    MAX_AI_TOKENS,
+    MODEL_FALLBACKS,
+)
 
 
 load_dotenv()
@@ -133,6 +136,7 @@ def _create_client(api_key):
     return OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=api_key,
+        timeout=60.0,
     )
 
 
@@ -319,7 +323,7 @@ Fruity Parametric EQ 2: пологий подъём высоких частот 
 {stem_data or "Отдельные стемы не переданы."}
 
 Данные по сегментам (каждый фрагмент анализировался отдельно):
-{segment_data_text}
+{_format_segment_data(segment_data)}
 
 Сравнение с ориентировочной кривой жанра:
 {genre_delta or "Сравнение с жанровой кривой не передано."}
@@ -331,6 +335,13 @@ Fruity Parametric EQ 2: пологий подъём высоких частот 
 
 Вопрос пользователя: {question}
 """
+    attached_metrics = st.session_state.get("attachedmetrics", [])
+    if attached_metrics:
+        user_prompt += (
+            "\n\nПользователь прикрепил метрики: "
+            f"{', '.join(attached_metrics)}. "
+            "Дай советы по их улучшению."
+        )
     return system_prompt, user_prompt
 
 
@@ -349,45 +360,54 @@ def get_consolidation_prompt(genre_name):
 
 
 def request_ai_response(system_prompt, user_prompt, chat_history=None):
-    try:
-        response = get_client().chat.completions.create(
-            model=MODEL,
-            messages=get_chat_messages(system_prompt, user_prompt, chat_history),
-            max_tokens=MAX_AI_TOKENS,
-        )
-    except OpenAIError as error:
-        status_code = getattr(error, "status_code", None)
-        safe_details = _safe_provider_error(error)
-        logger.error(
-            "OpenRouter request failed: status=%s error_type=%s details=%s",
-            status_code or "connection_error",
-            type(error).__name__,
-            safe_details,
-        )
-        raise AIRequestError(_format_api_failure(error)) from error
-
-    if not response.choices:
-        logger.error("OpenRouter returned no choices")
-        raise AIRequestError("OpenRouter вернул ответ без вариантов (choices).")
-
-    choice = response.choices[0]
-    answer = choice.message.content
-    if not answer:
-        if choice.finish_reason == "length":
-            logger.warning(
-                "OpenRouter exhausted completion token limit (max_tokens=%s)",
-                MAX_AI_TOKENS,
+    client = get_client()
+    messages = get_chat_messages(system_prompt, user_prompt, chat_history)
+    for model_name in MODEL_FALLBACKS:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                max_tokens=MAX_AI_TOKENS,
             )
-            raise AIRequestError(
-                "Модель израсходовала лимит токенов до формирования ответа. "
-                "Попробуйте сократить запрос или повторить его."
+        except OpenAIError as error:
+            status_code = getattr(error, "status_code", None)
+            safe_details = _safe_provider_error(error)
+            logger.error(
+                "OpenRouter request failed: status=%s error_type=%s details=%s",
+                status_code or "connection_error",
+                type(error).__name__,
+                safe_details,
             )
-        logger.error(
-            "OpenRouter returned empty content (finish_reason=%s)",
+            raise AIRequestError(_format_api_failure(error)) from error
+
+        if not response.choices:
+            logger.error("OpenRouter returned no choices")
+            raise AIRequestError("OpenRouter вернул ответ без вариантов (choices).")
+
+        choice = response.choices[0]
+        answer = choice.message.content
+        if isinstance(answer, str) and answer.strip():
+            answer = answer.strip()
+            break
+
+        logger.warning(
+            "OpenRouter model %s returned empty content (finish_reason=%s)",
+            model_name,
             choice.finish_reason,
         )
-        raise AIRequestError(
-            "OpenRouter вернул пустой текст ответа "
-            f"(причина завершения: {choice.finish_reason or 'не указана'})."
+        print(
+            f"DEBUG: Model {model_name} returned empty content. Trying next..."
         )
+    else:
+        return (
+            "Все модели ИИ временно перегружены. Пожалуйста, попробуйте "
+            "отправить сообщение еще раз через минуту. Ваш анализ сохранен."
+        )
+
+    if choice.finish_reason == "length":
+        logger.warning(
+            "OpenRouter exhausted completion token limit (max_tokens=%s)",
+            MAX_AI_TOKENS,
+        )
+        answer = f"{answer.rstrip()}\n\n[Ответ обрезан]"
     return answer

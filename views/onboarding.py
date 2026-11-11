@@ -38,17 +38,17 @@ def render_onboarding(segments):
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
+            ref_file = st.file_uploader(
+                "Загрузите референс (опционально)",
+                type=["mp3", "wav"],
+                max_upload_size=MAX_UPLOAD_SIZE_MB,
+            )
             vibe_description = st.text_area(
                 "Опиши свои мысли о треке (вайб, замысел, что изменил)",
                 placeholder="Расскажи о желаемом звучании, замысле или внесённых изменениях",
                 max_chars=500,
                 height=160,
                 key="onboarding_vibe_input",
-            )
-            ref_file = st.file_uploader(
-                "Загрузите референс (опционально)",
-                type=["mp3", "wav"],
-                max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
         else:
             beat_file = st.file_uploader(

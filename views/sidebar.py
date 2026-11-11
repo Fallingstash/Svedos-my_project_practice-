@@ -37,6 +37,7 @@ def _activate_session(session_id):
         return
 
     st.session_state.session_id = session["id"]
+    st.query_params["sessionid"] = session["id"]
     st.session_state.track_name = session["track_name"]
     st.session_state.display_name = session["display_name"]
     st.session_state.session_created_at = session["created_at"]
@@ -51,6 +52,7 @@ def _activate_session(session_id):
     st.session_state.vocal_path = session["vocal_path"]
     st.session_state.segments = session["segments"]
     st.session_state.chat_history = session["chat_history"]
+    st.session_state.attachedmetrics = []
     st.session_state.analyzed = True
     st.session_state.pendingai_request = False
     st.session_state.pendingai_payload = None
@@ -65,9 +67,12 @@ def _activate_session(session_id):
 
 
 def _start_new_session():
+    if "sessionid" in st.query_params:
+        del st.query_params["sessionid"]
     defaults = {
         "analyzed": False,
         "chat_history": [],
+        "attachedmetrics": [],
         "old_spectrum": None,
         "old_frequencies": None,
         "segments": [],

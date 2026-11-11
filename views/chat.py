@@ -50,16 +50,26 @@ def render_chat(
         st.session_state.pendingai_payload = None
 
     st.subheader(f"💬 ИИ-Наставник (Жанр: {genre})")
-    if st.session_state.get("pendingai_error"):
-        st.error(st.session_state.pendingai_error)
-        st.session_state.pendingai_error = None
-
     used_messages = sum(
         message["role"] == "user" for message in chat_history
     )
     remaining_messages = max(0, MAX_USER_MESSAGES - used_messages)
     remaining_percent = round(remaining_messages / MAX_USER_MESSAGES * 100)
     message_limit_reached = remaining_messages == 0
+    consolidate_clicked = st.button(
+        "📘 Закрепить знания",
+        disabled=(
+            not chat_history
+            or message_limit_reached
+            or st.session_state.pendingai_request
+        ),
+        use_container_width=True,
+    )
+
+    if st.session_state.get("pendingai_error"):
+        st.error(st.session_state.pendingai_error)
+        st.session_state.pendingai_error = None
+
     if message_limit_reached:
         purchase_columns = st.columns([4, 2])
         purchase_columns[0].warning(MESSAGE_LIMIT_MESSAGE)
@@ -77,6 +87,9 @@ def render_chat(
     chat_box = st.container(height=600)
     with chat_box:
         for message_index, message in enumerate(chat_history):
+            if message["role"] == "system":
+                st.info(message["content"])
+                continue
             with st.chat_message(message["role"]):
                 st.write(message["content"])
                 if (
@@ -131,17 +144,25 @@ def render_chat(
         remaining_percent / 100,
         text=f"Остаток бесплатного лимита: {remaining_percent}%",
     )
+    attached_metrics = st.session_state.setdefault("attachedmetrics", [])
+    if attached_metrics:
+        attached_columns = st.columns(min(len(attached_metrics), 4))
+        for index, metric_name in enumerate(tuple(attached_metrics)):
+            if attached_columns[index % len(attached_columns)].button(
+                f"❌ Убрать {metric_name}",
+                key=f"attached_metric_remove_{session_id or 'new'}_{index}",
+                help=f"Открепить метрику «{metric_name}»",
+                use_container_width=True,
+            ):
+                attached_metrics.remove(metric_name)
+                st.rerun()
+
     user_question = st.chat_input(
         "Задай вопрос...",
         max_chars=MAX_CHAT_MESSAGE_CHARS,
         disabled=message_limit_reached,
     )
 
-    consolidate_clicked = st.button(
-        "📘 Закрепить знания",
-        disabled=not chat_history or message_limit_reached,
-        use_container_width=True,
-    )
     settings_clicked = st.button(
         "⚙️ Настройки трека",
         key="chat_settings_button",

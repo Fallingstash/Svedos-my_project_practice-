@@ -90,6 +90,7 @@ def render_settings(
     )
     if st.session_state.get("session_vibe_input") is None:
         st.session_state.session_vibe_input = current_vibe
+    pending_ai_request = st.session_state.get("pendingai_request", False)
     analysis_mode = st.radio(
         "Что анализировать",
         ("master", "stems"),
@@ -97,12 +98,7 @@ def render_settings(
         key="analysis_mode_selector",
     )
     new_track = None
-    new_reference = st.file_uploader(
-        "Новый референс",
-        type=["mp3", "wav"],
-        key="new_ref",
-        max_upload_size=MAX_UPLOAD_SIZE_MB,
-    )
+    new_reference = None
     new_beat = None
     new_vocal = None
     if analysis_mode == "master":
@@ -111,6 +107,14 @@ def render_settings(
             type=["mp3", "wav"],
             key="new_track",
             max_upload_size=MAX_UPLOAD_SIZE_MB,
+            disabled=pending_ai_request,
+        )
+        new_reference = st.file_uploader(
+            "Новый референс",
+            type=["mp3", "wav"],
+            key="new_ref",
+            max_upload_size=MAX_UPLOAD_SIZE_MB,
+            disabled=pending_ai_request,
         )
     else:
         new_beat = st.file_uploader(
@@ -118,12 +122,21 @@ def render_settings(
             type=["mp3", "wav"],
             key="settings_beat",
             max_upload_size=MAX_UPLOAD_SIZE_MB,
+            disabled=pending_ai_request,
         )
         new_vocal = st.file_uploader(
             "Стем вокала",
             type=["mp3", "wav"],
             key="settings_vocal",
             max_upload_size=MAX_UPLOAD_SIZE_MB,
+            disabled=pending_ai_request,
+        )
+        new_reference = st.file_uploader(
+            "Новый референс",
+            type=["mp3", "wav"],
+            key="new_ref",
+            max_upload_size=MAX_UPLOAD_SIZE_MB,
+            disabled=pending_ai_request,
         )
     vibe_description = st.text_area(
         "Опиши свои мысли о треке (вайб, замысел, что изменил)",
@@ -136,7 +149,10 @@ def render_settings(
         "✅ Применить и вернуться в чат",
         type="primary",
         use_container_width=True,
+        disabled=pending_ai_request,
     )
+    if pending_ai_request:
+        st.warning("Дождитесь ответа ИИ, чтобы загрузить новую версию")
 
     st.divider()
     st.write("**Сегменты текущего трека:**")

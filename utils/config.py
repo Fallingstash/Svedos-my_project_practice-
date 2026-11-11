@@ -1,4 +1,9 @@
-MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free" # не меняем, показывает хороший результат
+MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" # не меняем, показывает хороший результат
+MODEL_FALLBACKS = [
+    "dots-studio/dots-3-note-preview:free",
+    "liquid/lfm-3-1.7b:free",
+    "openrouter/free",
+]
 MAX_AI_TOKENS = 2000
 AI_UNAVAILABLE_MESSAGE = (
     "Наш ИИ-наставник временно недоступен. Пожалуйста, попробуйте позже "

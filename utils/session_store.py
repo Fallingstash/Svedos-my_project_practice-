@@ -213,13 +213,19 @@ def list_sessions(user_id):
     return sessions
 
 
-def load_session(session_id, user_id):
+def _load_session(session_id, user_id=None):
     connection = _connect()
     try:
-        row = connection.execute(
-            "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
-            (session_id, user_id),
-        ).fetchone()
+        if user_id is None:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
     finally:
         connection.close()
 
@@ -228,6 +234,7 @@ def load_session(session_id, user_id):
 
     return {
         "id": row["id"],
+        "user_id": row["user_id"],
         "track_name": row["track_name"],
         "display_name": row["display_name"] or row["track_name"],
         "genre": row["genre"],
@@ -242,6 +249,14 @@ def load_session(session_id, user_id):
         "chat_history": json.loads(row["chat_history_json"]),
         "vibe_description": row["vibe_description"],
     }
+
+
+def load_session(session_id, user_id):
+    return _load_session(session_id, user_id)
+
+
+def load_session_for_resume(session_id):
+    return _load_session(session_id)
 
 
 def rename_session(session_id, user_id, display_name):

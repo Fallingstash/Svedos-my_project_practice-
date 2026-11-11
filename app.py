@@ -28,7 +28,11 @@ from utils.audioutils import (
     compare_spectra,
     get_genre_reference_delta,
 )
-from utils.session_store import allow_ai_request, save_session
+from utils.session_store import (
+    allow_ai_request,
+    load_session_for_resume,
+    save_session,
+)
 from views.chat import render_chat
 from views.graph import render_graph
 from views.onboarding import render_onboarding
@@ -41,6 +45,7 @@ st.set_page_config(page_title="Svedos", layout="wide")
 SESSION_DEFAULTS = {
     "analyzed": False,
     "chat_history": [],
+    "attachedmetrics": [],
     "old_spectrum": None,
     "old_frequencies": None,
     "segments": [],
@@ -127,6 +132,7 @@ def save_versioned_upload(uploaded_file, prefix):
 def persist_current_session():
     if not st.session_state.session_id or not st.session_state.file_path:
         return
+    st.query_params["sessionid"] = st.session_state.session_id
     save_session(
         {
             "id": st.session_state.session_id,
@@ -145,6 +151,42 @@ def persist_current_session():
             "chat_history": st.session_state.chat_history,
         }
     )
+
+
+def restore_session_from_url():
+    session_id = st.query_params.get("sessionid")
+    if not session_id or st.session_state.session_id:
+        return
+
+    session = load_session_for_resume(session_id)
+    if session is None or not session["user_id"]:
+        st.error("Не удалось восстановить сессию из ссылки.")
+        if "sessionid" in st.query_params:
+            del st.query_params["sessionid"]
+        return
+
+    st.session_state.user_id = session["user_id"]
+    st.session_state.session_id = session["id"]
+    st.session_state.track_name = session["track_name"]
+    st.session_state.display_name = session["display_name"]
+    st.session_state.session_created_at = session["created_at"]
+    st.session_state.genre = session["genre"]
+    st.session_state.vibe_description = session["vibe_description"]
+    st.session_state.session_vibe_input = session["vibe_description"]
+    st.session_state.file_path = session["track_path"]
+    st.session_state.ref_path = session["reference_path"]
+    st.session_state.analysis_mode = session["analysis_mode"]
+    st.session_state.analysis_mode_selector = session["analysis_mode"]
+    st.session_state.beat_path = session["beat_path"]
+    st.session_state.vocal_path = session["vocal_path"]
+    st.session_state.segments = session["segments"]
+    st.session_state.chat_history = session["chat_history"]
+    st.session_state.attachedmetrics = []
+    st.session_state.analyzed = True
+    st.session_state.pendingai_request = False
+    st.session_state.pendingai_payload = None
+    st.session_state.pendingai_error = None
+    st.session_state.view_mode = "chat"
 
 
 def get_reference_data():
@@ -309,6 +351,23 @@ def process_pending_ai_request(payload):
 
     st.caption("Считаю частоты...")
     audio_data, stem_data = analyze_current_source()
+    if payload.get("new_version") and previous_track_path:
+        previous_peaks = previous_audio.get("top_peaks", [])
+        current_peaks = audio_data.get("top_peaks", [])
+        if previous_peaks and current_peaks:
+            comparison_message = (
+                "📊 Сравнение версий: Главный пик сместился с "
+                f"{previous_peaks[0][0]:.0f} Гц на "
+                f"{current_peaks[0][0]:.0f} Гц. Это значит, что тональный "
+                "баланс в области этого пика изменился; сравни версии на "
+                "одинаковой громкости и проверь, поддерживает ли новое "
+                "звучание твой замысел."
+            )
+            st.session_state.chat_history.insert(
+                len(st.session_state.chat_history) - 1,
+                {"role": "system", "content": comparison_message},
+            )
+            persist_current_session()
     reference_delta = get_reference_delta(audio_data)
     st.markdown(f"💡 **Факт о звуке:** {random.choice(AUDIO_FACTS)}")
     st.caption("ИИ анализирует трек...")
@@ -363,6 +422,7 @@ def queue_ai_request(
     return True
 
 
+restore_session_from_url()
 render_sidebar()
 
 
@@ -373,6 +433,7 @@ if not st.session_state.analyzed:
         st.session_state.session_created_at = (
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
+        st.session_state.attachedmetrics = []
         st.session_state.genre = onboarding_result["genre"]
         st.session_state.vibe_description = onboarding_result.get(
             "vibe_description",
@@ -461,7 +522,20 @@ else:
                 st.session_state.view_mode = "chat"
                 st.rerun()
 
-            if settings_result and settings_result["action"] == "apply":
+            if (
+                settings_result
+                and settings_result["action"] == "apply"
+                and st.session_state.pendingai_request
+            ):
+                st.warning(
+                    "Дождитесь ответа ИИ, чтобы загрузить новую версию"
+                )
+
+            if (
+                settings_result
+                and settings_result["action"] == "apply"
+                and not st.session_state.pendingai_request
+            ):
                 st.session_state.vibe_description = settings_result[
                     "vibe_description"
                 ]
