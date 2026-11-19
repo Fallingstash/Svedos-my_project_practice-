@@ -38,16 +38,20 @@ class SessionStoreTests(unittest.TestCase):
             ],
             "old_spectrum": [-12.0, -6.0],
             "old_frequencies": [0.0, 3.9],
+            "context_summary": "Saved user decisions.",
+            "context_summary_message_count": 1,
         }
 
     def test_create_load_list_and_delete_are_owner_scoped(self):
-        session_store.save_session(self.make_session())
+        session_store.save_session(self.make_session(), "owner-1")
 
         loaded = session_store.load_session("session-1", "owner-1")
         self.assertEqual(loaded["segments"][0]["name"], "Куплет")
         self.assertEqual(len(loaded["chat_history"]), 2)
         self.assertEqual(loaded["old_spectrum"], [-12.0, -6.0])
         self.assertEqual(loaded["old_frequencies"], [0.0, 3.9])
+        self.assertEqual(loaded["context_summary"], "Saved user decisions.")
+        self.assertEqual(loaded["context_summary_message_count"], 1)
         self.assertIsNone(session_store.load_session("session-1", "other-user"))
         self.assertEqual(
             [item["id"] for item in session_store.list_sessions("owner-1")],
@@ -63,12 +67,12 @@ class SessionStoreTests(unittest.TestCase):
         self.assertIsNone(session_store.load_session("session-1", "owner-1"))
 
     def test_upsert_cannot_transfer_session_to_another_owner(self):
-        session_store.save_session(self.make_session())
+        session_store.save_session(self.make_session(), "owner-1")
         attempted_transfer = self.make_session(user_id="other-user")
         attempted_transfer["track_name"] = "attacker.wav"
 
-        with self.assertRaises(ValueError):
-            session_store.save_session(attempted_transfer)
+        with self.assertRaises(PermissionError):
+            session_store.save_session(attempted_transfer, "other-user")
 
         loaded = session_store.load_session("session-1", "owner-1")
         self.assertEqual(loaded["track_name"], "track.wav")
@@ -77,14 +81,14 @@ class SessionStoreTests(unittest.TestCase):
         )
 
     def test_repeated_save_updates_session_without_changing_its_owner(self):
-        session_store.save_session(self.make_session())
+        session_store.save_session(self.make_session(), "owner-1")
         session_store.rename_session("session-1", "owner-1", "Custom")
         updated = self.make_session()
         updated["chat_history"].append(
             {"role": "user", "content": "И еще вопрос."}
         )
         updated["display_name"] = "Renamed"
-        session_store.save_session(updated)
+        session_store.save_session(updated, "owner-1")
 
         loaded = session_store.load_session("session-1", "owner-1")
         self.assertEqual(loaded["display_name"], "Custom")
@@ -148,8 +152,64 @@ class SessionStoreTests(unittest.TestCase):
         self.assertIsNone(loaded["old_spectrum"])
         self.assertIsNone(loaded["old_frequencies"])
 
+    def test_existing_file_metadata_is_migrated_to_session_files(self):
+        connection = sqlite3.connect(self.database_path)
+        connection.execute(
+            """
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                track_name TEXT NOT NULL,
+                display_name TEXT NOT NULL DEFAULT '',
+                genre TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                track_path TEXT NOT NULL,
+                reference_path TEXT,
+                analysis_mode TEXT NOT NULL DEFAULT 'master',
+                beat_path TEXT,
+                vocal_path TEXT,
+                segments_json TEXT NOT NULL,
+                chat_history_json TEXT NOT NULL,
+                vibe_description TEXT NOT NULL DEFAULT '',
+                file_metadata_json TEXT NOT NULL DEFAULT '[]'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                id, user_id, track_name, genre, created_at, updated_at,
+                track_path, segments_json, chat_history_json, file_metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "legacy-files",
+                "owner-1",
+                "old.wav",
+                "Рэп",
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+                "history/legacy-files/old.wav",
+                "[]",
+                "[]",
+                '[{"object_key":"/data/history/legacy-files/old.wav",'
+                '"role":"track","original_name":"old.wav","byte_size":5}]',
+            ),
+        )
+        connection.commit()
+        connection.close()
+
+        loaded = session_store.load_session("legacy-files", "owner-1")
+
+        self.assertEqual(len(loaded["file_metadata"]), 1)
+        self.assertEqual(
+            loaded["file_metadata"][0]["object_key"],
+            "/data/history/legacy-files/old.wav",
+        )
+
     def test_rename_and_message_rate_limit_are_scoped(self):
-        session_store.save_session(self.make_session())
+        session_store.save_session(self.make_session(), "owner-1")
         with self.assertRaises(ValueError):
             session_store.rename_session("session-1", "other-user", "Changed")
 
@@ -173,28 +233,28 @@ class SessionStoreTests(unittest.TestCase):
 
         self.assertEqual(sum(results), 1)
 
-    def test_recovery_token_opens_only_one_session(self):
-        session_store.save_session(self.make_session("session-1", "owner-1"))
-        session_store.save_session(self.make_session("session-2", "owner-1"))
+    def test_old_recovery_api_is_disabled_and_share_is_explicit(self):
+        session_store.save_session(self.make_session("session-1", "owner-1"), "owner-1")
+        session_store.save_session(self.make_session("session-2", "owner-1"), "owner-1")
 
-        token = session_store.create_recovery_token("session-1", "owner-1")
-
-        loaded = session_store.load_session_for_recovery_token(token)
-        self.assertEqual(loaded["id"], "session-1")
-        self.assertIsNotNone(
-            session_store.load_session_for_recovery_token(token)
-        )
+        with self.assertRaises(RuntimeError):
+            session_store.create_recovery_token("session-1", "owner-1")
         self.assertIsNone(
-            session_store.load_session_for_recovery_token("wrong-token")
+            session_store.load_session_for_recovery_token("old-token")
         )
+
+        token = session_store.create_share_token("session-1", "owner-1")
+        loaded = session_store.load_shared_session(token)
+        self.assertEqual(loaded["id"], "session-1")
+        self.assertIsNone(session_store.load_shared_session("wrong-token"))
+        self.assertIsNone(session_store.load_shared_session("non-ascii-ключ"))
 
         updated = self.make_session("session-1", "attacker")
         updated["chat_history"] = [{"role":"assistant","content":"updated"}]
-        session_store.save_session_for_recovery_token(token, updated)
-        self.assertEqual(
-            session_store.load_session("session-1", "owner-1")["chat_history"][0]["role"],
-            "assistant",
-        )
+        with self.assertRaises(RuntimeError):
+            session_store.save_session_for_recovery_token(token, updated)
+        session_store.revoke_share_token("session-1", "owner-1")
+        self.assertIsNone(session_store.load_shared_session(token))
         self.assertIsNotNone(session_store.load_session("session-2", "owner-1"))
 
     def test_delete_session_removes_only_owned_files_inside_data_directory(self):
@@ -208,7 +268,7 @@ class SessionStoreTests(unittest.TestCase):
                 session_store.save_session({
                     **self.make_session("session-delete", "owner-1"),
                     "track_path": str(track),
-                })
+                }, "owner-1")
 
                 session_store.delete_session("session-delete", "owner-1")
 

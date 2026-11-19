@@ -37,7 +37,12 @@ METRIC_HELP = {
 }
 
 
-def _render_metric_grid(metrics, columns=3, key_prefix="metric"):
+def _render_metric_grid(
+    metrics,
+    columns=3,
+    key_prefix="metric",
+    readonly_mode=False,
+):
     for offset in range(0, len(metrics), columns):
         metric_columns = st.columns(columns)
         for column_index, (column, (label, value)) in enumerate(
@@ -61,7 +66,7 @@ def _render_metric_grid(metrics, columns=3, key_prefix="metric"):
                         f"attach_metric_{key_prefix}_"
                         f"{offset + column_index}_{label}"
                     ),
-                    disabled=is_attached,
+                    disabled=is_attached or readonly_mode,
                     use_container_width=True,
                 ):
                     attached_metrics.append(label)
@@ -77,6 +82,7 @@ def render_graph(
     genre_name=None,
     audio_path=None,
     vocal_path=None,
+    readonly_mode=False,
 ):
     with st.container(height=800):
         st.subheader("📊 Спектр трека")
@@ -191,6 +197,7 @@ def render_graph(
                         ),
                     ],
                     key_prefix=f"stem_{label}",
+                    readonly_mode=readonly_mode,
                 )
             st.caption(
                 "Разброс LUFS за 3-секундные окна: "
@@ -242,6 +249,7 @@ def render_graph(
                     ),
                 ],
                 key_prefix="master",
+                readonly_mode=readonly_mode,
             )
 
         if audio_data.get("segment_analyses"):
@@ -292,6 +300,7 @@ def render_graph(
                                 f"segment_{segment['name']}_"
                                 f"{source_name or 'master'}"
                             ),
+                            readonly_mode=readonly_mode,
                         )
 
 

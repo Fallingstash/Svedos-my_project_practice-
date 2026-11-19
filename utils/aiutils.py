@@ -1,8 +1,14 @@
 import logging
+import json
 import os
 import re
+import time
+from functools import lru_cache
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 import streamlit as st
+import tiktoken
 from dotenv import load_dotenv
 from openai import OpenAI
 from openai import OpenAIError
@@ -155,26 +161,198 @@ def get_client():
 
 def get_chat_messages(system_prompt, user_prompt, chat_history=None):
     messages = [{"role": "system", "content": system_prompt}]
-    selected_messages = []
-    remaining_chars = 12000
-    for message in reversed(chat_history or []):
-        content = str(message.get("content", ""))
-        if message.get("role") not in {"user", "assistant", "system"}:
-            continue
-        if len(content) > remaining_chars:
-            content = content[:remaining_chars]
-        if not content:
-            continue
-        selected_messages.append(
-            {"role": message["role"], "content": content}
-        )
-        remaining_chars -= len(content)
-        if remaining_chars <= 0:
-            break
-    for message in reversed(selected_messages):
-        messages.append(message)
+    for message in chat_history or []:
+        if message.get("role") in {"user", "assistant", "system"}:
+            messages.append(
+                {
+                    "role": message["role"],
+                    "content": str(message.get("content", "")),
+                }
+            )
     messages.append({"role": "user", "content": user_prompt})
     return messages
+
+
+MODEL_CONTEXT_FALLBACK = 16_384
+CONTEXT_OUTPUT_RESERVE = MAX_AI_TOKENS + 512
+CONTEXT_SUMMARY_MAX_TOKENS = 1200
+_TOKENIZER = tiktoken.get_encoding("cl100k_base")
+
+
+@lru_cache(maxsize=32)
+def _openrouter_context_limits():
+    endpoint = "https://openrouter.ai/api/v1/models"
+    try:
+        catalog_request = Request(endpoint, headers={"Accept": "application/json"})
+        with urlopen(catalog_request, timeout=4) as response:
+            models = json.load(response)["data"]
+        return {
+            model["id"]: int(model["context_length"])
+            for model in models
+            if model.get("id")
+            and int(model.get("context_length") or 0) > 0
+        }
+    except (URLError, TimeoutError, OSError, ValueError, KeyError, TypeError) as error:
+        logger.warning(
+            "Could not read OpenRouter model context lengths: %s",
+            type(error).__name__,
+        )
+        return {}
+
+
+def _model_context_window(model_name):
+    return _openrouter_context_limits().get(
+        model_name,
+        MODEL_CONTEXT_FALLBACK,
+    )
+
+
+def _message_token_count(message):
+    return len(_TOKENIZER.encode(message["content"])) * 2 + 4
+
+
+def _messages_token_count(messages):
+    return sum(_message_token_count(message) for message in messages) + 2
+
+
+def _summarize_history_chunk(client, prior_summary, messages):
+    transcript = "\n\n".join(
+        f"{message['role']}: {message['content']}" for message in messages
+    )
+    summary_input = (
+        f"Предыдущее резюме:\n{prior_summary or 'пусто'}\n\n"
+        f"Старая часть диалога:\n{transcript}"
+    )
+    summary_system = (
+        "Сожми предыдущий разговор для продолжения наставничества по сведению. "
+        "Сохраняй пользовательский замысел, конкретные решения, уже проверенные "
+        "советы и открытые вопросы. Не добавляй фактов и не меняй смысл. "
+        "Оставляй творческие предпочтения, даже если они необычны."
+    )
+    for model_name in (MODEL, *MODEL_FALLBACKS):
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=[
+                    {"role": "system", "content": summary_system},
+                    {"role": "user", "content": summary_input},
+                ],
+                max_tokens=CONTEXT_SUMMARY_MAX_TOKENS,
+            )
+        except OpenAIError as error:
+            if getattr(error, "status_code", None) in (401, 402):
+                raise AIRequestError(_format_api_failure(error)) from error
+            continue
+        if response.choices:
+            content = response.choices[0].message.content
+            if isinstance(content, str) and content.strip():
+                return content.strip()
+    raise AIRequestError(
+        "Не удалось безопасно сжать старую часть диалога для продолжения."
+    )
+
+
+def _messages_with_context_summary(
+    client,
+    system_prompt,
+    user_prompt,
+    chat_history,
+    model_context_limit,
+):
+    full_history = [
+        {
+            "role": message["role"],
+            "content": str(message.get("content", "")),
+        }
+        for message in (chat_history or [])
+        if message.get("role") in {"user", "assistant", "system"}
+    ]
+    summary = st.session_state.get("context_summary", "")
+    try:
+        covered_count = int(
+            st.session_state.get("context_summary_message_count", 0)
+        )
+    except (TypeError, ValueError):
+        covered_count = 0
+    covered_count = min(max(covered_count, 0), len(full_history))
+    history = full_history[covered_count:]
+    available = model_context_limit - CONTEXT_OUTPUT_RESERVE
+    base = [{"role": "system", "content": system_prompt}]
+    if summary:
+        base.append(
+            {
+                "role": "assistant",
+                "content": "Резюме более ранней части этого диалога "
+                "(исходная история сохранена отдельно):\n" + summary,
+            }
+        )
+    base.append({"role": "user", "content": user_prompt})
+    if _messages_token_count(base + history) <= available:
+        return base[:-1] + history + [base[-1]], summary
+
+    base_without_summary = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    base_tokens = _messages_token_count(base_without_summary)
+    if base_tokens >= available:
+        raise AIRequestError(
+            "Текущий анализ и вопрос превышают доступный контекст модели."
+        )
+
+    recent_budget = max(512, (available - base_tokens) // 2)
+    recent = []
+    recent_tokens = 0
+    split_index = len(history)
+    for index in range(len(history) - 1, -1, -1):
+        tokens = _message_token_count(history[index])
+        if recent and recent_tokens + tokens > recent_budget:
+            break
+        if tokens > recent_budget and not recent:
+            raise AIRequestError(
+                "Одно сообщение истории превышает доступный контекст модели."
+            )
+        recent.insert(0, history[index])
+        recent_tokens += tokens
+        split_index = index
+
+    old_history = history[:split_index]
+    chunk_limit = max(1024, min(6000, available // 3))
+    chunks = []
+    current_chunk = []
+    current_tokens = 0
+    for message in old_history:
+        token_count = _message_token_count(message)
+        if current_chunk and current_tokens + token_count > chunk_limit:
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_tokens = 0
+        current_chunk.append(message)
+        current_tokens += token_count
+    if current_chunk:
+        chunks.append(current_chunk)
+    for chunk in chunks:
+        summary = _summarize_history_chunk(client, summary, chunk)
+    st.session_state.context_summary = summary
+    st.session_state.context_summary_message_count = (
+        covered_count + split_index
+    )
+    summary_message = {
+        "role": "assistant",
+        "content": "Резюме более ранней части этого диалога "
+        "(исходная история сохранена отдельно):\n" + summary,
+    }
+    compacted = [
+        {"role": "system", "content": system_prompt},
+        summary_message,
+        *recent,
+        {"role": "user", "content": user_prompt},
+    ]
+    if _messages_token_count(compacted) > available:
+        raise AIRequestError(
+            "Не удалось уместить историю диалога в окно контекста модели."
+        )
+    return compacted, summary
 
 
 def get_strict_prompt(
@@ -379,10 +557,45 @@ def get_consolidation_prompt(genre_name):
 
 
 def request_ai_response(system_prompt, user_prompt, chat_history=None):
+    started_at = time.monotonic()
+    st.session_state.last_ai_metadata = None
     client = get_client()
-    messages = get_chat_messages(system_prompt, user_prompt, chat_history)
+    models = (MODEL, *MODEL_FALLBACKS)
+    context_limit = min(_model_context_window(model_name) for model_name in models)
+    messages, _ = _messages_with_context_summary(
+        client,
+        system_prompt,
+        user_prompt,
+        chat_history,
+        context_limit,
+    )
     last_error = None
-    for model_name in (MODEL, *MODEL_FALLBACKS):
+    models_tried = []
+    usage = None
+    used_model = None
+
+    def store_diagnostics():
+        def usage_value(name):
+            if usage is None:
+                return None
+            value = (
+                usage.get(name)
+                if isinstance(usage, dict)
+                else getattr(usage, name, None)
+            )
+            return value if isinstance(value, int) and value >= 0 else None
+
+        st.session_state.last_ai_metadata = {
+            "model": used_model,
+            "prompt_tokens": usage_value("prompt_tokens"),
+            "completion_tokens": usage_value("completion_tokens"),
+            "latency_ms": round((time.monotonic() - started_at) * 1000),
+            "attempts": len(models_tried),
+            "models_tried": list(models_tried),
+        }
+
+    for model_name in models:
+        models_tried.append(model_name)
         try:
             response = client.chat.completions.create(
                 model=model_name,
@@ -399,6 +612,7 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
                 safe_details,
             )
             if status_code in (401, 402):
+                store_diagnostics()
                 raise AIRequestError(_format_api_failure(error)) from error
             last_error = error
             continue
@@ -411,6 +625,8 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
         answer = choice.message.content
         if isinstance(answer, str) and answer.strip():
             answer = answer.strip()
+            used_model = getattr(response, "model", None) or model_name
+            usage = getattr(response, "usage", None)
             break
 
         logger.warning(
@@ -419,10 +635,12 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
             choice.finish_reason,
         )
     else:
+        store_diagnostics()
         if last_error is not None:
             raise AIRequestError(_format_api_failure(last_error)) from last_error
         raise AIRequestError(AI_UNAVAILABLE_MESSAGE)
 
+    store_diagnostics()
     if choice.finish_reason == "length":
         logger.warning(
             "OpenRouter exhausted completion token limit (max_tokens=%s)",

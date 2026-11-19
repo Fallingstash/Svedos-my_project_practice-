@@ -7,12 +7,15 @@ import pyloudnorm as pyln
 import streamlit as st
 import soundfile as sf
 from scipy.signal import find_peaks, resample_poly
+from scipy.fft import rfft
 
 from utils.config import (
+    DECODED_AUDIO_TOO_LARGE_MESSAGE,
     INVALID_AUDIO_FILE_MESSAGE,
     INVALID_AUDIO_TYPE_MESSAGE,
     MAX_AUDIO_DURATION_SECONDS,
     MAX_AUDIO_DURATION_MESSAGE,
+    MAX_DECODED_AUDIO_BYTES,
     MAX_UPLOAD_SIZE_BYTES,
     SUPPORTED_AUDIO_EXTENSIONS,
     UPLOAD_TOO_LARGE_MESSAGE,
@@ -57,6 +60,11 @@ def validate_audio_upload(uploaded_file):
                 return INVALID_AUDIO_FILE_MESSAGE
             if audio_info.duration > MAX_AUDIO_DURATION_SECONDS:
                 return MAX_AUDIO_DURATION_MESSAGE
+            if (
+                audio_info.frames * audio_info.channels * 4
+                > MAX_DECODED_AUDIO_BYTES
+            ):
+                return DECODED_AUDIO_TOO_LARGE_MESSAGE
             audio, _ = librosa.load(
                 str(temporary_path),
                 sr=None,
@@ -235,10 +243,11 @@ def _stereo_metrics(audio):
 
     left = audio[0]
     right = audio[1]
-    mid = (left + right) * 0.5
-    side = (left - right) * 0.5
-    mid_rms = float(np.sqrt(np.mean(mid**2)))
-    side_rms = float(np.sqrt(np.mean(side**2)))
+    left_energy = np.einsum("i,i->", left, left, dtype=np.float64) / left.size
+    right_energy = np.einsum("i,i->", right, right, dtype=np.float64) / right.size
+    cross_energy = np.einsum("i,i->", left, right, dtype=np.float64) / left.size
+    mid_rms = float(np.sqrt(max(left_energy + right_energy + 2 * cross_energy, 0) / 4))
+    side_rms = float(np.sqrt(max(left_energy + right_energy - 2 * cross_energy, 0) / 4))
     width_ratio = (
         side_rms / mid_rms
         if mid_rms > 0
@@ -252,17 +261,23 @@ def _phase_correlation(audio):
     if audio.ndim < 2 or audio.shape[0] < 2:
         return 1.0
 
-    left = np.asarray(audio[0], dtype=float)
-    right = np.asarray(audio[1], dtype=float)
+    left = audio[0]
+    right = audio[1]
     if left.size == 0 or right.size == 0:
         return 0.0
-
-    left_centered = left - np.mean(left)
-    right_centered = right - np.mean(right)
-    denominator = np.linalg.norm(left_centered) * np.linalg.norm(right_centered)
+    left_sum = np.sum(left, dtype=np.float64)
+    right_sum = np.sum(right, dtype=np.float64)
+    left_square_sum = np.einsum("i,i->", left, left, dtype=np.float64)
+    right_square_sum = np.einsum("i,i->", right, right, dtype=np.float64)
+    product_sum = np.einsum("i,i->", left, right, dtype=np.float64)
+    count = left.size
+    covariance = product_sum - left_sum * right_sum / count
+    left_variance = max(left_square_sum - left_sum * left_sum / count, 0)
+    right_variance = max(right_square_sum - right_sum * right_sum / count, 0)
+    denominator = np.sqrt(left_variance * right_variance)
     if denominator == 0:
         return 1.0 if np.array_equal(left, right) else 0.0
-    correlation = float(np.dot(left_centered, right_centered) / denominator)
+    correlation = float(covariance / denominator)
     return float(np.clip(correlation, -1.0, 1.0))
 
 
@@ -318,23 +333,85 @@ def _integrated_loudness(audio, sample_rate):
     return meter.integrated_loudness(_loudness_channel_shape(audio))
 
 
+def _streaming_spectral_stats(audio, sample_rate):
+    n_fft = FFT_SIZE
+    hop_length = n_fft // 4
+    padded = np.pad(audio, (n_fft // 2, n_fft // 2), mode="constant")
+    frames = np.lib.stride_tricks.sliding_window_view(padded, n_fft)[::hop_length]
+    window = librosa.filters.get_window("hann", n_fft, fftbins=True).astype(
+        np.float32
+    )
+    frequencies = np.fft.rfftfreq(n_fft, 1.0 / sample_rate)
+    magnitude_sum = np.zeros(n_fft // 2 + 1, dtype=np.float64)
+    centroid_sum = 0.0
+    frame_count = len(frames)
+    for offset in range(0, frame_count, 1024):
+        frame_batch = frames[offset : offset + 1024] * window
+        magnitudes = np.abs(rfft(frame_batch, axis=1))
+        magnitude_sum += np.sum(magnitudes, axis=0, dtype=np.float64)
+        frame_energy = np.sum(magnitudes, axis=1)
+        centroid_sum += float(
+            np.sum(
+                np.divide(
+                    magnitudes @ frequencies,
+                    frame_energy,
+                    out=np.zeros_like(frame_energy),
+                    where=frame_energy > 0,
+                )
+            )
+        )
+    return (
+        (magnitude_sum / max(frame_count, 1)).astype(np.float32),
+        centroid_sum / max(frame_count, 1),
+    )
+
+
+def _streaming_true_peak(audio, sample_rate):
+    block_size = max(sample_rate * 30, 1)
+    margin = 64
+    peak = 0.0
+    total_samples = audio.shape[-1]
+    for start in range(0, total_samples, block_size):
+        end = min(start + block_size, total_samples)
+        extended_start = max(0, start - margin)
+        extended_end = min(total_samples, end + margin)
+        extended = audio[..., extended_start:extended_end]
+        oversampled = resample_poly(
+            extended,
+            TRUE_PEAK_OVERSAMPLE,
+            1,
+            axis=-1,
+        )
+        core_start = (start - extended_start) * TRUE_PEAK_OVERSAMPLE
+        core_end = core_start + (end - start) * TRUE_PEAK_OVERSAMPLE
+        peak = max(peak, float(np.max(np.abs(oversampled[..., core_start:core_end]))))
+    return peak
+
+
 def _analyze_audio(audio, sample_rate, segments=()):
     source_audio = audio
     selected_audio, analysis_context = _prepare_audio(audio, sample_rate, segments)
     stereo_width_pct, stereo_width_db = _stereo_metrics(selected_audio)
-    if selected_audio.ndim == 2:
-        mono_audio = np.mean(selected_audio, axis=0)
-        channel_magnitudes = [
-            np.abs(librosa.stft(channel, n_fft=FFT_SIZE))
-            for channel in selected_audio
-        ]
-        magnitude = np.mean(channel_magnitudes, axis=0)
+    mono_audio = (
+        np.mean(selected_audio, axis=0)
+        if selected_audio.ndim == 2
+        else selected_audio
+    )
+    channel_magnitudes = [
+        _streaming_spectral_stats(channel, sample_rate)[0]
+        for channel in selected_audio
+    ] if selected_audio.ndim == 2 else None
+    if channel_magnitudes is not None:
+        average_magnitude = np.mean(channel_magnitudes, axis=0)
     else:
-        mono_audio = selected_audio
-        magnitude = np.abs(librosa.stft(mono_audio, n_fft=FFT_SIZE))
+        average_magnitude, spectralcentroid = _streaming_spectral_stats(
+            mono_audio,
+            sample_rate,
+        )
+    if channel_magnitudes is not None:
+        _, spectralcentroid = _streaming_spectral_stats(mono_audio, sample_rate)
     phase_correlation = _phase_correlation(selected_audio)
 
-    average_magnitude = np.mean(magnitude, axis=1)
     absolute_spectrum = librosa.amplitude_to_db(
         average_magnitude,
         ref=1.0,
@@ -344,15 +421,7 @@ def _analyze_audio(audio, sample_rate, segments=()):
         average_magnitude,
         ref=max(float(np.max(average_magnitude)), 1e-10),
     )
-    spectralcentroid = float(
-        np.mean(
-            librosa.feature.spectral_centroid(
-                y=mono_audio,
-                sr=sample_rate,
-                n_fft=FFT_SIZE,
-            )
-        )
-    )
+    spectralcentroid = float(spectralcentroid)
     frequencies = librosa.fft_frequencies(sr=sample_rate, n_fft=FFT_SIZE)
 
     peaks, _ = find_peaks(normalized_spectrum, prominence=5)
@@ -385,22 +454,14 @@ def _analyze_audio(audio, sample_rate, segments=()):
     loudness = _integrated_loudness(selected_audio, sample_rate)
     sample_peak = float(np.max(np.abs(selected_audio)))
     max_peak_db = 20 * np.log10(sample_peak) if sample_peak > 0 else float("-inf")
-    if selected_audio.ndim == 2:
-        oversampled_audio = resample_poly(
-            selected_audio,
-            TRUE_PEAK_OVERSAMPLE,
-            1,
-            axis=-1,
-        )
-    else:
-        oversampled_audio = resample_poly(
-            selected_audio,
-            TRUE_PEAK_OVERSAMPLE,
-            1,
-        )
-    true_peak = float(np.max(np.abs(oversampled_audio)))
+    true_peak = _streaming_true_peak(selected_audio, sample_rate)
     true_peak_db = 20 * np.log10(true_peak) if true_peak > 0 else float("-inf")
-    rms = float(np.sqrt(np.mean(selected_audio**2)))
+    rms = float(
+        np.sqrt(
+            np.dot(selected_audio.ravel(), selected_audio.ravel())
+            / selected_audio.size
+        )
+    )
     rms_db = 20 * np.log10(rms) if rms > 0 else float("-inf")
     crest_factor = max_peak_db - rms_db
     plr = true_peak_db - loudness if np.isfinite(loudness) else None
@@ -487,6 +548,8 @@ def _analyze_audio_cached(file_path, file_size, modified_ns, segments):
         raise ValueError(INVALID_AUDIO_FILE_MESSAGE)
     if audio_info.duration > MAX_AUDIO_DURATION_SECONDS:
         raise ValueError(MAX_AUDIO_DURATION_MESSAGE)
+    if audio_info.frames * audio_info.channels * 4 > MAX_DECODED_AUDIO_BYTES:
+        raise ValueError(DECODED_AUDIO_TOO_LARGE_MESSAGE)
     try:
         audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
     except Exception as error:

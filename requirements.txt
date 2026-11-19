@@ -3,7 +3,13 @@ librosa
 numpy
 scipy
 matplotlib
+soundfile
+httpx
 pyloudnorm
 openai
 python-dotenv
 streamlit
+extra-streamlit-components==0.1.81
+psycopg[binary]
+supabase
+tiktoken

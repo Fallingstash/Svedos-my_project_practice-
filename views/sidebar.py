@@ -1,13 +1,15 @@
 from datetime import datetime
-from pathlib import Path
 
 import streamlit as st
 
+from utils.config import get_server_secret
 from utils.session_store import (
+    create_share_token,
     delete_session,
     list_sessions,
     load_session,
     rename_session,
+    revoke_share_token,
 )
 
 
@@ -24,16 +26,6 @@ def _activate_session(session_id):
     session = load_session(session_id, st.session_state.user_id)
     if session is None:
         st.error("Не удалось найти выбранную сессию.")
-        return
-
-    required_paths = [session["track_path"]]
-    if session["analysis_mode"] == "stems":
-        required_paths.extend((session["beat_path"], session["vocal_path"]))
-    missing_paths = [
-        path for path in required_paths if not path or not Path(path).is_file()
-    ]
-    if missing_paths:
-        st.error("Не найдены аудиофайлы этой сессии. Проверь папку history.")
         return
 
     st.session_state.session_id = session["id"]
@@ -69,8 +61,15 @@ def _activate_session(session_id):
 
 
 def _start_new_session():
-    if "sessionid" in st.query_params:
-        del st.query_params["sessionid"]
+    for parameter in ("sessionid", "restore", "share"):
+        if parameter in st.query_params:
+            del st.query_params[parameter]
+    temporary_directory = st.session_state.get("audio_temp_dir")
+    if temporary_directory is not None:
+        try:
+            temporary_directory.cleanup()
+        except OSError as error:
+            st.warning(f"Временные файлы аудио не удалось очистить: {error}")
     defaults = {
         "analyzed": False,
         "chat_history": [],
@@ -93,6 +92,8 @@ def _start_new_session():
         "track_name": "",
         "display_name": "",
         "session_created_at": None,
+        "session_save_pending": False,
+        "session_save_error": None,
         "pendingai_request": False,
         "pendingai_payload": None,
         "pendingai_error": None,
@@ -101,11 +102,28 @@ def _start_new_session():
         "chat_upload_generation": 0,
         "recovery_mode": False,
         "recovery_token": None,
+        "readonly_mode": False,
+        "share_token": None,
+        "share_link": None,
+        "share_confirmation_session_id": None,
+        "file_refs": {},
+        "file_metadata": [],
+        "analysis_data": None,
+        "context_summary": "",
+        "context_summary_message_count": 0,
+        "audio_runtime_cache": {},
+        "audio_temp_dir": None,
     }
     for key, value in defaults.items():
-        st.session_state[key] = value.copy() if isinstance(value, list) else value
+        st.session_state[key] = (
+            value.copy() if isinstance(value, (list, dict)) else value
+        )
     st.session_state.chat_upload_generation += 1
     st.rerun()
+
+
+def startnew_session():
+    _start_new_session()
 
 
 @st.dialog("Управление сессией")
@@ -119,13 +137,80 @@ def _manage_session_dialog(session_id):
         return
 
     session_name = session["display_name"] or session["track_name"]
-    edited_name = st.text_input(
-        "Название сессии",
-        value=session_name,
-        key=f"manage_session_name_{session_id}",
-    )
-    open_col, save_col = st.columns(2)
-    if open_col.button(
+    st.divider()
+    st.write("**Публикация**")
+    share_col, revoke_col = st.columns(2)
+    if share_col.button(
+        "Поделиться сессией",
+        key=f"share_session_{session_id}",
+        use_container_width=True,
+    ):
+        st.session_state.share_confirmation_session_id = session_id
+    if st.session_state.get("share_confirmation_session_id") == session_id:
+        st.warning(
+            "Любой обладатель ссылки сможет просматривать чат, метрики, "
+            "графики и загруженное аудио этой сессии."
+        )
+        confirm_col, cancel_col = st.columns(2)
+        if confirm_col.button(
+            "Создать ссылку",
+            key=f"confirm_share_{session_id}",
+            use_container_width=True,
+        ):
+            app_base_url = get_server_secret("APPBASEURL")
+            if not app_base_url:
+                st.error(
+                    "APPBASEURL не настроен. Сначала задайте публичный адрес приложения."
+                )
+            else:
+                try:
+                    token = create_share_token(
+                        session_id,
+                        st.session_state.user_id,
+                    )
+                except (ValueError, RuntimeError) as error:
+                    st.error(str(error))
+                else:
+                    st.session_state.share_link = (
+                        f"{app_base_url.rstrip('/')}/?share={token}"
+                    )
+                    st.session_state.share_confirmation_session_id = None
+                    st.success("Публичная ссылка создана.")
+        if cancel_col.button(
+            "Отмена",
+            key=f"cancel_share_{session_id}",
+            use_container_width=True,
+        ):
+            st.session_state.share_confirmation_session_id = None
+    if st.session_state.get("share_link"):
+        st.text_input(
+            "Ссылка для копирования",
+            value=st.session_state.share_link,
+            key=f"share_link_field_{session_id}",
+        )
+    if revoke_col.button(
+        "Отозвать ссылку",
+        key=f"revoke_share_{session_id}",
+        use_container_width=True,
+    ):
+        try:
+            revoke_share_token(session_id, st.session_state.user_id)
+        except (ValueError, RuntimeError) as error:
+            st.error(str(error))
+        else:
+            st.session_state.share_link = None
+            st.success("Публичная ссылка отозвана.")
+    with st.form(key=f"manage_rename_form_{session_id}"):
+        edited_name = st.text_input(
+            "Название сессии",
+            value=session_name,
+        )
+        save_name_clicked = st.form_submit_button(
+            "Сохранить имя",
+            use_container_width=True,
+        )
+
+    if st.button(
         "Открыть",
         key=f"manage_open_session_{session_id}",
         use_container_width=True,
@@ -133,14 +218,10 @@ def _manage_session_dialog(session_id):
         st.session_state.sessionto_manage = None
         _activate_session(session_id)
 
-    if save_col.button(
-        "Сохранить имя",
-        key=f"manage_save_session_{session_id}",
-        use_container_width=True,
-    ):
+    if save_name_clicked:
         try:
             rename_session(session_id, st.session_state.user_id, edited_name)
-        except ValueError as error:
+        except (ValueError, RuntimeError) as error:
             st.error(str(error))
         else:
             if session_id == st.session_state.session_id:
@@ -168,7 +249,7 @@ def _manage_session_dialog(session_id):
         ):
             try:
                 delete_session(session_id, st.session_state.user_id)
-            except ValueError as error:
+            except (ValueError, RuntimeError, OSError) as error:
                 st.error(str(error))
             else:
                 st.session_state.sessionto_manage = None
@@ -196,11 +277,10 @@ def _manage_session_dialog(session_id):
 
 def render_sidebar():
     with st.sidebar:
-        if st.session_state.get("recovery_mode", False):
-            st.caption(
-                "Открыта одна сессия по защищённой ссылке. "
-                "Другие сессии недоступны."
-            )
+        if st.session_state.get("readonly_mode", False):
+            st.caption("Опубликованная сессия · Только просмотр")
+            if st.button("Создать собственный разбор", use_container_width=True):
+                _start_new_session()
             return
         if "sessionto_manage" not in st.session_state:
             st.session_state.sessionto_manage = None
@@ -219,9 +299,6 @@ def render_sidebar():
                 key=f"open_session_{session['id']}",
                 use_container_width=True,
             ):
-                st.session_state[f"manage_session_name_{session['id']}"] = (
-                    session["display_name"] or session["track_name"]
-                )
                 st.session_state.sessionto_manage = session["id"]
                 st.session_state.session_delete_confirmation_id = None
                 st.rerun()

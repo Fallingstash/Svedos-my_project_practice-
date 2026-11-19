@@ -1,9 +1,12 @@
 import random
+import math
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
 import streamlit as st
+import extra_streamlit_components as stx
 
 from utils.config import (
     AUDIO_FACTS,
@@ -18,6 +21,7 @@ from utils.config import (
     UPLOAD_TOO_LARGE_MESSAGE,
 )
 from utils.aiutils import (
+    AIRequestError,
     get_consolidation_prompt,
     get_strict_prompt,
     request_ai_response,
@@ -29,12 +33,28 @@ from utils.audioutils import (
     get_genre_reference_delta,
 )
 from utils.session_store import (
-    DATA_DIRECTORY,
     allow_ai_request,
-    create_recovery_token,
-    load_session_for_recovery_token,
+    load_shared_session,
+    load_session,
+    record_ai_usage,
+    save_analysis,
     save_session,
-    save_session_for_recovery_token,
+)
+from utils.guest_identity import (
+    COOKIE_MAX_AGE_SECONDS,
+    COOKIE_NAME,
+    create_guest_id,
+    get_guest_cookie_secret,
+    sign_guest_id,
+    verify_signed_guest_id,
+)
+from utils.config import validate_storage_configuration
+from utils.storage import (
+    AudioStorageError,
+    authorize_session_audio,
+    materialize_audio,
+    save_audio_upload,
+    validate_backend_ready,
 )
 from views.chat import render_chat
 from views.graph import render_graph
@@ -67,6 +87,8 @@ SESSION_DEFAULTS = {
     "display_name": "",
     "session_created_at": None,
     "user_id": None,
+    "session_save_pending": False,
+    "session_save_error": None,
     "pendingai_request": False,
     "pendingai_payload": None,
     "pendingai_error": None,
@@ -75,14 +97,57 @@ SESSION_DEFAULTS = {
     "session_delete_confirmation_id": None,
     "recovery_mode": False,
     "recovery_token": None,
+    "readonly_mode": False,
+    "share_token": None,
+    "share_link": None,
+    "share_confirmation_session_id": None,
+    "file_refs": {},
+    "file_metadata": [],
+    "analysis_data": None,
+    "context_summary": "",
+    "context_summary_message_count": 0,
+    "last_ai_metadata": None,
+    "audio_runtime_cache": {},
+    "audio_temp_dir": None,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = (
-            default.copy() if isinstance(default, list) else default
+            default.copy() if isinstance(default, (list, dict)) else default
         )
+
+
+@st.cache_resource
+def _validate_backend():
+    validate_storage_configuration()
+    validate_backend_ready()
+
+
+try:
+    _validate_backend()
+except RuntimeError as error:
+    st.error(str(error))
+    st.stop()
+
 if not st.session_state.user_id:
-    st.session_state.user_id = str(uuid4())
+    try:
+        guest_secret = get_guest_cookie_secret()
+    except RuntimeError as error:
+        st.error(str(error))
+        st.stop()
+    signed_cookie = st.context.cookies.get(COOKIE_NAME)
+    guest_id = verify_signed_guest_id(signed_cookie, guest_secret)
+    if guest_id is None:
+        guest_id = create_guest_id()
+        stx.CookieManager(key="svedos_cookie_manager").set(
+            COOKIE_NAME,
+            sign_guest_id(guest_id, guest_secret),
+            max_age=COOKIE_MAX_AGE_SECONDS,
+            path="/",
+            secure=True,
+            same_site="lax",
+        )
+    st.session_state.user_id = guest_id
 
 st.markdown(
     """
@@ -104,6 +169,61 @@ def analysis_segments():
     )
 
 
+def _json_safe(value):
+    if hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "item"):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _analysis_snapshot(audio_data, stem_data):
+    fields = (
+        "analysis_context",
+        "request_str",
+        "bands_str",
+        "dynamics_str",
+        "loudness",
+        "max_short_term_lufs",
+        "true_peak_db",
+        "max_peak_db",
+        "phase_correlation",
+        "spectralcentroid",
+        "crest_factor",
+        "stereo_width_pct",
+        "plr",
+        "short_term_lufs_variance",
+        "top_peaks",
+        "spectrum",
+        "frequencies",
+        "segment_analyses",
+    )
+    snapshot = {
+        key: _json_safe(audio_data[key])
+        for key in fields
+        if key in audio_data
+    }
+    if stem_data:
+        snapshot["stems"] = _json_safe(stem_data)
+    return snapshot
+
+
+def _audio_temp_directory():
+    temporary_directory = st.session_state.get("audio_temp_dir")
+    if temporary_directory is None:
+        temporary_directory = tempfile.TemporaryDirectory(
+            prefix="svedos-audio-"
+        )
+        st.session_state.audio_temp_dir = temporary_directory
+    return Path(temporary_directory.name)
+
+
 def save_versioned_upload(uploaded_file, prefix):
     extension = Path(uploaded_file.name).suffix.lower()
     content_type = str(getattr(uploaded_file, "type", "") or "").lower()
@@ -121,23 +241,37 @@ def save_versioned_upload(uploaded_file, prefix):
         st.session_state.session_created_at = (
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
-    session_directory = (
-        DATA_DIRECTORY
-        / "history"
-        / st.session_state.session_id
-    )
-    session_directory.mkdir(parents=True, exist_ok=True)
-
-    file_path = session_directory / f"{prefix}_{uuid4().hex}{extension}"
-    with file_path.open("xb") as audio_file:
-        audio_file.write(file_buffer)
-    return str(file_path)
+    try:
+        object_key, metadata = save_audio_upload(
+            st.session_state.user_id,
+            st.session_state.session_id,
+            uploaded_file,
+            prefix,
+        )
+        if not any(
+            item["object_key"] == object_key
+            for item in st.session_state.file_metadata
+        ):
+            st.session_state.file_metadata.append(metadata)
+        if object_key.startswith(f"{st.session_state.user_id}/"):
+            file_path = _audio_temp_directory() / (
+                f"{uuid4().hex}{extension}"
+            )
+            with file_path.open("xb") as audio_file:
+                audio_file.write(file_buffer)
+            st.session_state.audio_runtime_cache[object_key] = str(file_path)
+            return str(file_path), object_key
+        return object_key, object_key
+    except (AudioStorageError, OSError) as error:
+        st.error(f"Не удалось сохранить аудио: {error}")
+        st.stop()
 
 
 def persist_current_session():
+    if st.session_state.get("readonly_mode", False):
+        return False
     if not st.session_state.session_id or not st.session_state.file_path:
-        return
-    st.query_params["sessionid"] = st.session_state.session_id
+        return False
     session_data = {
         "id": st.session_state.session_id,
         "user_id": st.session_state.user_id,
@@ -146,13 +280,31 @@ def persist_current_session():
         "genre": st.session_state.genre,
         "vibe_description": st.session_state.vibe_description,
         "created_at": st.session_state.session_created_at,
-        "track_path": st.session_state.file_path,
-        "reference_path": st.session_state.ref_path,
+        "track_path": st.session_state.file_refs.get(
+            "track_path",
+            st.session_state.file_path,
+        ),
+        "reference_path": st.session_state.file_refs.get(
+            "reference_path",
+            st.session_state.ref_path,
+        ),
         "analysis_mode": st.session_state.analysis_mode,
-        "beat_path": st.session_state.beat_path,
-        "vocal_path": st.session_state.vocal_path,
+        "beat_path": st.session_state.file_refs.get(
+            "beat_path",
+            st.session_state.beat_path,
+        ),
+        "vocal_path": st.session_state.file_refs.get(
+            "vocal_path",
+            st.session_state.vocal_path,
+        ),
         "segments": st.session_state.segments,
         "chat_history": st.session_state.chat_history,
+        "analysis_data": st.session_state.analysis_data,
+        "context_summary": st.session_state.context_summary,
+        "context_summary_message_count": (
+            st.session_state.context_summary_message_count
+        ),
+        "file_metadata": st.session_state.file_metadata,
         "old_spectrum": (
             st.session_state.old_spectrum.tolist()
             if st.session_state.old_spectrum is not None
@@ -164,43 +316,48 @@ def persist_current_session():
             else None
         ),
     }
-    if st.session_state.recovery_mode:
-        save_session_for_recovery_token(
-            st.session_state.recovery_token,
-            session_data,
-        )
-    else:
-        save_session(session_data)
-    if not st.session_state.recovery_mode and not st.session_state.recovery_token:
-        st.session_state.recovery_token = create_recovery_token(
-            st.session_state.session_id,
-            st.session_state.user_id,
-        )
-    st.query_params["restore"] = st.session_state.recovery_token
+    try:
+        save_session(session_data, owner_id=st.session_state.user_id)
+    except (RuntimeError, ValueError, PermissionError, OSError) as error:
+        st.session_state.session_save_pending = True
+        st.session_state.session_save_error = str(error)
+        return False
+    st.query_params["sessionid"] = st.session_state.session_id
+    st.session_state.session_save_pending = False
+    st.session_state.session_save_error = None
+    return True
 
 
-def restore_session_from_url():
-    recovery_token = st.query_params.get("restore")
-    if not recovery_token:
-        if "sessionid" in st.query_params:
-            del st.query_params["sessionid"]
-            st.error(
-                "Старая ссылка восстановления больше не поддерживается. "
-                "Откройте сессию заново из истории."
-            )
-        return
+def _session_audio_path(session_id, field, object_key, share_token=None):
+    if not object_key:
+        return None
+    user_id = st.session_state.user_id
+    authorize_session_audio(
+        session_id,
+        object_key,
+        user_id=None if share_token else user_id,
+        share_token=share_token,
+    )
+    cached_path = st.session_state.audio_runtime_cache.get(object_key)
+    if cached_path and Path(cached_path).is_file():
+        return cached_path
+    path = materialize_audio(
+        session_id,
+        object_key,
+        _audio_temp_directory(),
+        user_id=None if share_token else user_id,
+        share_token=share_token,
+    )
+    st.session_state.audio_runtime_cache[object_key] = path
+    return path
 
-    if st.session_state.session_id:
-        return
 
-    session = load_session_for_recovery_token(recovery_token)
-    if session is None or not session["user_id"]:
-        st.error("Не удалось восстановить сессию из ссылки.")
-        for parameter in ("restore", "sessionid"):
-            if parameter in st.query_params:
-                del st.query_params[parameter]
-        return
-
+def _restore_session(session, readonly=False, share_token=None):
+    same_private_session = (
+        not readonly
+        and not st.session_state.get("readonly_mode", False)
+        and st.session_state.get("session_id") == session["id"]
+    )
     st.session_state.session_id = session["id"]
     st.session_state.track_name = session["track_name"]
     st.session_state.display_name = session["display_name"]
@@ -208,24 +365,99 @@ def restore_session_from_url():
     st.session_state.genre = session["genre"]
     st.session_state.vibe_description = session["vibe_description"]
     st.session_state.session_vibe_input = session["vibe_description"]
-    st.session_state.file_path = session["track_path"]
-    st.session_state.ref_path = session["reference_path"]
     st.session_state.analysis_mode = session["analysis_mode"]
     st.session_state.analysis_mode_selector = session["analysis_mode"]
-    st.session_state.beat_path = session["beat_path"]
-    st.session_state.vocal_path = session["vocal_path"]
     st.session_state.segments = session["segments"]
+    st.session_state.file_refs = {
+        "track_path": session["track_path"],
+        "reference_path": session["reference_path"],
+        "beat_path": session["beat_path"],
+        "vocal_path": session["vocal_path"],
+    }
+    st.session_state.file_metadata = session.get("file_metadata", [])
+    st.session_state.file_path = _session_audio_path(
+        session["id"],
+        "track_path",
+        session["track_path"],
+        share_token,
+    )
+    st.session_state.ref_path = _session_audio_path(
+        session["id"],
+        "reference_path",
+        session["reference_path"],
+        share_token,
+    )
+    st.session_state.beat_path = _session_audio_path(
+        session["id"],
+        "beat_path",
+        session["beat_path"],
+        share_token,
+    )
+    st.session_state.vocal_path = _session_audio_path(
+        session["id"],
+        "vocal_path",
+        session["vocal_path"],
+        share_token,
+    )
     st.session_state.chat_history = session["chat_history"]
     st.session_state.old_spectrum = session["old_spectrum"]
     st.session_state.old_frequencies = session["old_frequencies"]
-    st.session_state.recovery_mode = True
-    st.session_state.recovery_token = recovery_token
+    st.session_state.analysis_data = session.get("analysis_data")
+    st.session_state.context_summary = session.get("context_summary", "")
+    st.session_state.context_summary_message_count = session.get(
+        "context_summary_message_count",
+        0,
+    )
+    st.session_state.readonly_mode = readonly
+    st.session_state.share_token = share_token
+    st.session_state.recovery_mode = False
+    st.session_state.recovery_token = None
     st.session_state.attachedmetrics = []
     st.session_state.analyzed = True
-    st.session_state.pendingai_request = False
-    st.session_state.pendingai_payload = None
-    st.session_state.pendingai_error = None
+    if not same_private_session or readonly:
+        st.session_state.pendingai_request = False
+        st.session_state.pendingai_payload = None
+        st.session_state.pendingai_error = None
     st.session_state.view_mode = "chat"
+
+
+def restore_session_from_url():
+    share_token = st.query_params.get("share")
+    session_id = st.query_params.get("sessionid")
+
+    if share_token:
+        session = load_shared_session(share_token)
+        if session is None:
+            st.error(
+                "Нет доступа к этой сессии. Возможно, она приватная или "
+                "ссылка больше не действует."
+            )
+            st.stop()
+        try:
+            _restore_session(session, readonly=True, share_token=share_token)
+        except (AudioStorageError, PermissionError, OSError) as error:
+            st.error(f"Не удалось открыть аудио сессии: {error}")
+            st.stop()
+        return
+
+    if st.session_state.get("readonly_mode", False):
+        from views.sidebar import startnew_session
+
+        startnew_session()
+
+    if session_id:
+        session = load_session(session_id, st.session_state.user_id)
+        if session is None:
+            st.error(
+                "Нет доступа к этой сессии. Возможно, она приватная или "
+                "ссылка больше не действует."
+            )
+            st.stop()
+        try:
+            _restore_session(session)
+        except (AudioStorageError, PermissionError, OSError) as error:
+            st.error(f"Не удалось открыть аудио сессии: {error}")
+            st.stop()
 
 
 def get_reference_data():
@@ -376,16 +608,55 @@ def request_analysis(
         genre_delta=get_genre_reference_delta(audio_data, st.session_state.genre),
         vibe_description=st.session_state.vibe_description,
     )
-    return request_ai_response(system_prompt, user_prompt, chat_history)
+    return _request_ai_with_diagnostics(
+        system_prompt,
+        user_prompt,
+        chat_history,
+    )
+
+
+def _request_ai_with_diagnostics(system_prompt, user_prompt, chat_history=None):
+    metadata = st.session_state.get("last_ai_metadata") or {}
+
+    def persist_diagnostics():
+        if not st.session_state.session_id or not metadata:
+            return
+        try:
+            record_ai_usage(
+                st.session_state.user_id,
+                st.session_state.session_id,
+                metadata.get("model"),
+                metadata.get("prompt_tokens"),
+                metadata.get("completion_tokens"),
+                metadata.get("latency_ms", 0),
+                metadata.get("attempts", 1),
+            )
+        except RuntimeError as error:
+            st.warning(
+                "Ответ получен, но диагностические данные AI не сохранены: "
+                f"{error}"
+            )
+
+    try:
+        answer = request_ai_response(system_prompt, user_prompt, chat_history)
+    except AIRequestError:
+        metadata = st.session_state.get("last_ai_metadata") or {}
+        persist_diagnostics()
+        raise
+    metadata = st.session_state.get("last_ai_metadata") or {}
+    persist_diagnostics()
+    return answer
 
 
 def process_pending_ai_request(payload):
+    if st.session_state.get("readonly_mode", False):
+        raise ValueError("Опубликованная сессия доступна только для просмотра.")
     if payload["kind"] == "consolidation":
         system_prompt, user_prompt = get_consolidation_prompt(
             st.session_state.genre
         )
         st.markdown(f"💡 **Факт о звуке:** {random.choice(AUDIO_FACTS)}")
-        return request_ai_response(
+        return _request_ai_with_diagnostics(
             system_prompt,
             user_prompt,
             st.session_state.chat_history[:-1],
@@ -440,6 +711,12 @@ def queue_ai_request(
     previous_track_path=None,
     new_version=False,
 ):
+    if st.session_state.get("readonly_mode", False):
+        st.session_state.pendingai_error = (
+            "Опубликованная сессия доступна только для просмотра."
+        )
+        st.session_state.view_mode = "chat"
+        return False
     if kind == "chat" and len(question) > MAX_CHAT_MESSAGE_CHARS:
         st.session_state.pendingai_error = MESSAGE_TOO_LONG_MESSAGE
         st.session_state.view_mode = "chat"
@@ -453,6 +730,9 @@ def queue_ai_request(
     if message_count >= message_limit:
         st.session_state.pendingai_error = MESSAGE_LIMIT_MESSAGE
         st.session_state.view_mode = "chat"
+        return False
+
+    if not persist_current_session():
         return False
 
     if not allow_ai_request(
@@ -471,11 +751,29 @@ def queue_ai_request(
     }
     st.session_state.pendingai_request = True
     st.session_state.view_mode = "chat"
-    persist_current_session()
     return True
 
 
+if st.session_state.get("session_save_pending", False):
+    st.error(
+        "Сессия или метаданные аудио ещё не сохранены. "
+        "Проверьте доступность хранилища и повторите попытку. "
+        "Не закрывайте вкладку до успешного сохранения."
+        + (
+            f"\n\n{st.session_state.session_save_error}"
+            if st.session_state.get("session_save_error")
+            else ""
+        )
+    )
+    if st.button("Повторить сохранение", type="primary"):
+        if persist_current_session():
+            st.rerun()
+    st.stop()
+
+
 restore_session_from_url()
+if st.session_state.get("readonly_mode", False):
+    st.warning("Опубликованная сессия · Только просмотр")
 render_sidebar()
 
 
@@ -496,6 +794,9 @@ if not st.session_state.analyzed:
         st.session_state.chat_history = []
         st.session_state.old_spectrum = None
         st.session_state.old_frequencies = None
+        st.session_state.analysis_data = None
+        st.session_state.file_refs = {}
+        st.session_state.file_metadata = []
         st.session_state.analysis_mode = onboarding_result.get(
             "analysis_mode",
             st.session_state.get("onboarding_analysis_mode", "master"),
@@ -504,22 +805,36 @@ if not st.session_state.analyzed:
             track = onboarding_result["track"]
             st.session_state.track_name = track.name
             st.session_state.display_name = track.name
-            st.session_state.file_path = save_versioned_upload(track, "track")
+            (
+                st.session_state.file_path,
+                st.session_state.file_refs["track_path"],
+            ) = save_versioned_upload(track, "track")
             st.session_state.beat_path = None
             st.session_state.vocal_path = None
             reference = onboarding_result["reference"]
-            st.session_state.ref_path = (
-                save_versioned_upload(reference, "reference")
-                if reference is not None
-                else None
-            )
+            if reference is not None:
+                (
+                    st.session_state.ref_path,
+                    st.session_state.file_refs["reference_path"],
+                ) = save_versioned_upload(reference, "reference")
+            else:
+                st.session_state.ref_path = None
             initial_question = "Дай мне 3 конкретных совета по сведению этого трека."
         else:
             beat = onboarding_result["beat"]
             vocal = onboarding_result["vocal"]
-            st.session_state.beat_path = save_versioned_upload(beat, "beat")
-            st.session_state.vocal_path = save_versioned_upload(vocal, "vocal")
+            (
+                st.session_state.beat_path,
+                st.session_state.file_refs["beat_path"],
+            ) = save_versioned_upload(beat, "beat")
+            (
+                st.session_state.vocal_path,
+                st.session_state.file_refs["vocal_path"],
+            ) = save_versioned_upload(vocal, "vocal")
             st.session_state.file_path = st.session_state.beat_path
+            st.session_state.file_refs["track_path"] = (
+                st.session_state.file_refs["beat_path"]
+            )
             st.session_state.track_name = f"{beat.name} + {vocal.name}"
             st.session_state.display_name = st.session_state.track_name
             st.session_state.ref_path = None
@@ -550,9 +865,31 @@ else:
         reference_audio = None
         analysis_error = str(error)
 
+    if (
+        current_audio is not None
+        and not st.session_state.get("readonly_mode", False)
+        and st.session_state.analysis_data is None
+    ):
+        analysis_snapshot = _analysis_snapshot(
+            current_audio,
+            current_stem_data,
+        )
+        try:
+            save_analysis(
+                st.session_state.session_id,
+                st.session_state.user_id,
+                analysis_snapshot,
+            )
+        except (RuntimeError, ValueError, OSError) as error:
+            st.error(f"Не удалось сохранить результаты анализа: {error}")
+            st.stop()
+        st.session_state.analysis_data = analysis_snapshot
+
     col_chat, col_graph = st.columns([1, 1])
 
     with col_chat:
+        if st.session_state.get("readonly_mode", False):
+            st.session_state.view_mode = "chat"
         if st.session_state.view_mode == "settings":
             settings_result = render_settings(
                 st.session_state.segments,
@@ -568,6 +905,7 @@ else:
             )
 
             if settings_result and settings_result["action"] == "segments_updated":
+                st.session_state.analysis_data = None
                 persist_current_session()
                 st.rerun()
 
@@ -634,30 +972,47 @@ else:
                         or st.session_state.display_name == old_track_name
                     ):
                         st.session_state.display_name = settings_result["track"].name
-                    st.session_state.file_path = save_versioned_upload(
+                    (
+                        st.session_state.file_path,
+                        st.session_state.file_refs["track_path"],
+                    ) = save_versioned_upload(
                         settings_result["track"],
                         "track",
                     )
 
                 if settings_result["reference"] is not None:
-                    st.session_state.ref_path = save_versioned_upload(
+                    (
+                        st.session_state.ref_path,
+                        st.session_state.file_refs["reference_path"],
+                    ) = save_versioned_upload(
                         settings_result["reference"],
                         "reference",
                     )
 
                 if settings_result["beat"] is not None:
-                    st.session_state.beat_path = save_versioned_upload(
+                    (
+                        st.session_state.beat_path,
+                        st.session_state.file_refs["beat_path"],
+                    ) = save_versioned_upload(
                         settings_result["beat"],
                         "beat",
                     )
                 if settings_result["vocal"] is not None:
-                    st.session_state.vocal_path = save_versioned_upload(
+                    (
+                        st.session_state.vocal_path,
+                        st.session_state.file_refs["vocal_path"],
+                    ) = save_versioned_upload(
                         settings_result["vocal"],
                         "vocal",
                     )
                 st.session_state.analysis_mode = settings_result["analysis_mode"]
                 if st.session_state.analysis_mode == "stems":
                     st.session_state.file_path = st.session_state.beat_path
+                    st.session_state.file_refs["track_path"] = (
+                        st.session_state.file_refs.get("beat_path")
+                    )
+                if new_version_uploaded:
+                    st.session_state.analysis_data = None
                 persist_current_session()
                 previous_track_for_graph = (
                     old_track_path
@@ -746,4 +1101,5 @@ else:
                 st.session_state.vocal_path
                 if st.session_state.analysis_mode == "stems"
                 else None,
+                readonly_mode=st.session_state.get("readonly_mode", False),
             )

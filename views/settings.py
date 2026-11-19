@@ -56,7 +56,7 @@ def _build_markdown_report(track_name, genre, audio_data, stem_data, chat_histor
 
 ANALYSIS_MODE_LABELS = {
     "master": "Анализировать мастер-трек",
-    "stems": "Анализировать стемы (Бит + Вокал)",
+    "stems": "Анализировать стемы (инструментал без вокала + вокал отдельно)",
 }
 
 
@@ -118,7 +118,7 @@ def render_settings(
         )
     else:
         new_beat = st.file_uploader(
-            "Стем бита",
+            "Инструментал / beat без вокала",
             type=["mp3", "wav"],
             key="settings_beat",
             max_upload_size=MAX_UPLOAD_SIZE_MB,

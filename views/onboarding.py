@@ -52,12 +52,12 @@ def render_onboarding(segments):
             )
         else:
             beat_file = st.file_uploader(
-                "Загрузите стем бита",
+                "Инструментал / beat без вокала",
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )
             vocal_file = st.file_uploader(
-                "Загрузите стем вокала",
+                "Вокал / vocal-only",
                 type=["mp3", "wav"],
                 max_upload_size=MAX_UPLOAD_SIZE_MB,
             )

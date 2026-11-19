@@ -47,6 +47,7 @@ def render_chat(
     session_id=None,
     user_id=None,
 ):
+    readonly_mode = st.session_state.get("readonly_mode", False)
     if "pendingai_request" not in st.session_state:
         st.session_state.pendingai_request = False
     if "pendingai_payload" not in st.session_state:
@@ -66,6 +67,7 @@ def render_chat(
             not chat_history
             or message_limit_reached
             or st.session_state.pendingai_request
+            or readonly_mode
         ),
         use_container_width=True,
     )
@@ -83,7 +85,7 @@ def render_chat(
 
     feedback_by_message = (
         get_message_feedbacks(session_id, user_id)
-        if session_id and user_id
+        if session_id and user_id and not readonly_mode
         else {}
     )
     chat_box = st.container(height=600)
@@ -98,6 +100,7 @@ def render_chat(
                     message["role"] == "assistant"
                     and session_id
                     and user_id
+                    and not readonly_mode
                 ):
                     feedback_columns = st.columns([1, 1, 8])
                     for column, rating, label, help_text in (
@@ -148,7 +151,7 @@ def render_chat(
         "(бесплатный лимит)",
     )
     attached_metrics = st.session_state.setdefault("attachedmetrics", [])
-    if attached_metrics:
+    if attached_metrics and not readonly_mode:
         attached_columns = st.columns(min(len(attached_metrics), 4))
         for index, metric_name in enumerate(tuple(attached_metrics)):
             if attached_columns[index % len(attached_columns)].button(
@@ -163,13 +166,14 @@ def render_chat(
     user_question = st.chat_input(
         "Задай вопрос...",
         max_chars=MAX_CHAT_MESSAGE_CHARS,
-        disabled=message_limit_reached,
+        disabled=message_limit_reached or readonly_mode,
     )
 
     settings_clicked = st.button(
         "⚙️ Настройки трека",
         key="chat_settings_button",
         use_container_width=True,
+        disabled=readonly_mode,
     )
 
     if settings_clicked:

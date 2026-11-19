@@ -32,7 +32,34 @@ def response_with_content(content):
     )
 
 
+class SessionState(dict):
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError as error:
+            raise AttributeError(key) from error
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
 class AIRequestTests(unittest.TestCase):
+    def test_chat_messages_preserve_full_history_order(self):
+        history = [
+            {"role": "user", "content": "oldest " + "x" * 8000},
+            {"role": "assistant", "content": "middle"},
+            {"role": "user", "content": "latest"},
+        ]
+
+        messages = aiutils.get_chat_messages("system", "question", history)
+
+        self.assertEqual(messages[1]["content"], history[0]["content"])
+        self.assertEqual(
+            [message["content"] for message in messages[1:-1]],
+            [message["content"] for message in history],
+        )
+        self.assertEqual(messages[-1]["content"], "question")
+
     def test_primary_model_is_tried_before_fallback(self):
         client = SimpleNamespace(
             chat=SimpleNamespace(
@@ -123,6 +150,62 @@ class AIRequestTests(unittest.TestCase):
                 aiutils.request_ai_response("system", "question")
 
         self.assertEqual(calls, [MODEL])
+
+    def test_context_compaction_keeps_original_history_and_persists_boundary(self):
+        state = SessionState(context_summary="", context_summary_message_count=0)
+        history = [
+            {"role": "user", "content": f"decision-{index} " + "x" * 350}
+            for index in range(24)
+        ]
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=lambda **kwargs: response_with_content(
+                        "summary of preserved decisions"
+                    )
+                )
+            )
+        )
+
+        with patch.object(aiutils.st, "session_state", state), patch.object(
+            aiutils,
+            "_message_token_count",
+            side_effect=lambda message: len(message["content"]),
+        ):
+            messages, summary = aiutils._messages_with_context_summary(
+                client,
+                "system",
+                "current question",
+                history,
+                5000,
+            )
+
+        self.assertTrue(summary)
+        self.assertEqual(len(history), 24)
+        self.assertGreater(state.context_summary_message_count, 0)
+        self.assertIn("summary of preserved decisions", messages[1]["content"])
+        self.assertEqual(messages[-1]["content"], "current question")
+
+    def test_response_metadata_uses_provider_model_and_reported_usage(self):
+        state = SessionState(context_summary="", context_summary_message_count=0)
+        response = response_with_content("answer")
+        response.model = "provider/actual-model"
+        response.usage = SimpleNamespace(prompt_tokens=51, completion_tokens=12)
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=lambda **kwargs: response)
+            )
+        )
+
+        with patch.object(aiutils.st, "session_state", state), patch.object(
+            aiutils, "get_client", return_value=client
+        ), patch.object(aiutils, "_model_context_window", return_value=8192):
+            answer = aiutils.request_ai_response("system", "question")
+
+        self.assertEqual(answer, "answer")
+        self.assertEqual(state.last_ai_metadata["model"], "provider/actual-model")
+        self.assertEqual(state.last_ai_metadata["prompt_tokens"], 51)
+        self.assertEqual(state.last_ai_metadata["completion_tokens"], 12)
 
 
 if __name__ == "__main__":
