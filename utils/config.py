@@ -4,6 +4,7 @@ MODEL_FALLBACKS = [
     "liquid/lfm-3-1.7b:free",
     "openrouter/free",
 ]
+SVEDOS_DEMO_MODE = False
 MAX_AI_TOKENS = 2000
 AI_UNAVAILABLE_MESSAGE = (
     "Наш ИИ-наставник временно недоступен. Пожалуйста, попробуйте позже "
@@ -12,6 +13,10 @@ AI_UNAVAILABLE_MESSAGE = (
 
 MAX_UPLOAD_SIZE_MB = 30
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+MAX_AUDIO_DURATION_SECONDS = 20 * 60
+MAX_AUDIO_DURATION_MESSAGE = (
+    "Аудиофайл слишком длинный. Максимальная длительность анализа — 20 минут."
+)
 SUPPORTED_AUDIO_EXTENSIONS = {".mp3", ".wav"}
 INVALID_AUDIO_TYPE_MESSAGE = "Загрузите аудиофайл в формате MP3 или WAV."
 INVALID_AUDIO_FILE_MESSAGE = (
@@ -22,9 +27,15 @@ UPLOAD_TOO_LARGE_MESSAGE = "Максимальный размер аудиофа
 RATE_LIMIT_SECONDS = 3
 RATE_LIMIT_MESSAGE = "Не так быстро! Подождите несколько секунд перед следующим запросом."
 MAX_USER_MESSAGES = 10
+
+
+def get_message_limit(demo_package_active=False):
+    return MAX_USER_MESSAGES
+
+
 MAX_CHAT_MESSAGE_CHARS = 500
 MESSAGE_LIMIT_MESSAGE = (
-    "Лимит бесплатных сообщений исчерпан."
+    "Лимит сообщений для текущего разбора исчерпан."
 )
 MESSAGE_TOO_LONG_MESSAGE = (
     "Сообщение слишком длинное. Максимум — 500 символов."

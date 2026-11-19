@@ -5,18 +5,9 @@ from utils.config import (
     MAX_CHAT_MESSAGE_CHARS,
     MAX_USER_MESSAGES,
     MESSAGE_LIMIT_MESSAGE,
+    get_message_limit,
 )
 from utils.session_store import get_message_feedbacks, save_message_feedback
-
-
-@st.dialog("Пакет разборов")
-def _show_purchase_dialog():
-    st.write("Купите 10 сессий с полноценными разборами за 200 руб.")
-    st.button(
-        "Оплата скоро появится",
-        disabled=True,
-        use_container_width=True,
-    )
 
 
 def _process_pending_request(chat_history, process_pending_request, save_history):
@@ -25,8 +16,20 @@ def _process_pending_request(chat_history, process_pending_request, save_history
         with st.spinner("ИИ анализирует..."):
             answer = process_pending_request(payload)
     except (AIRequestError, ValueError) as error:
+        if payload.get("kind") != "consolidation":
+            user_message = {
+                "role": "user",
+                "content": payload.get("question", ""),
+            }
+            if chat_history and chat_history[-1] == user_message:
+                chat_history.pop()
+                save_history()
         st.session_state.pendingai_error = str(error)
     else:
+        if payload.get("kind") != "consolidation":
+            chat_history.append(
+                {"role": "user", "content": payload.get("question", "")}
+            )
         chat_history.append({"role": "assistant", "content": answer})
         save_history()
         st.session_state.pendingai_error = None
@@ -53,8 +56,9 @@ def render_chat(
     used_messages = sum(
         message["role"] == "user" for message in chat_history
     )
-    remaining_messages = max(0, MAX_USER_MESSAGES - used_messages)
-    remaining_percent = round(remaining_messages / MAX_USER_MESSAGES * 100)
+    message_limit = get_message_limit()
+    remaining_messages = max(0, message_limit - used_messages)
+    remaining_percent = round(remaining_messages / message_limit * 100)
     message_limit_reached = remaining_messages == 0
     consolidate_clicked = st.button(
         "📘 Закрепить знания",
@@ -71,13 +75,11 @@ def render_chat(
         st.session_state.pendingai_error = None
 
     if message_limit_reached:
-        purchase_columns = st.columns([4, 2])
-        purchase_columns[0].warning(MESSAGE_LIMIT_MESSAGE)
-        if purchase_columns[1].button(
-            "Купить 10 сессий за 200 руб",
-            use_container_width=True,
-        ):
-            _show_purchase_dialog()
+        st.warning(
+            f"{MESSAGE_LIMIT_MESSAGE} "
+            "Использовано 10 из 10 сообщений этой сессии. "
+            "Новая платная версия пока недоступна; оплата не подключена."
+        )
 
     feedback_by_message = (
         get_message_feedbacks(session_id, user_id)
@@ -142,7 +144,8 @@ def render_chat(
 
     st.progress(
         remaining_percent / 100,
-        text=f"Остаток бесплатного лимита: {remaining_percent}%",
+        text=f"Использовано {used_messages} из {message_limit} сообщений "
+        "(бесплатный лимит)",
     )
     attached_metrics = st.session_state.setdefault("attachedmetrics", [])
     if attached_metrics:

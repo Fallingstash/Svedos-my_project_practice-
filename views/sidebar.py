@@ -37,6 +37,8 @@ def _activate_session(session_id):
         return
 
     st.session_state.session_id = session["id"]
+    st.session_state.recovery_mode = False
+    st.session_state.recovery_token = None
     st.query_params["sessionid"] = session["id"]
     st.session_state.track_name = session["track_name"]
     st.session_state.display_name = session["display_name"]
@@ -59,8 +61,8 @@ def _activate_session(session_id):
     st.session_state.pendingai_error = None
     st.session_state.sessionto_manage = None
     st.session_state.session_delete_confirmation_id = None
-    st.session_state.old_spectrum = None
-    st.session_state.old_frequencies = None
+    st.session_state.old_spectrum = session["old_spectrum"]
+    st.session_state.old_frequencies = session["old_frequencies"]
     st.session_state.view_mode = "chat"
     st.session_state.chat_upload_generation += 1
     st.rerun()
@@ -97,6 +99,8 @@ def _start_new_session():
         "sessionto_manage": None,
         "session_delete_confirmation_id": None,
         "chat_upload_generation": 0,
+        "recovery_mode": False,
+        "recovery_token": None,
     }
     for key, value in defaults.items():
         st.session_state[key] = value.copy() if isinstance(value, list) else value
@@ -192,6 +196,12 @@ def _manage_session_dialog(session_id):
 
 def render_sidebar():
     with st.sidebar:
+        if st.session_state.get("recovery_mode", False):
+            st.caption(
+                "Открыта одна сессия по защищённой ссылке. "
+                "Другие сессии недоступны."
+            )
+            return
         if "sessionto_manage" not in st.session_state:
             st.session_state.sessionto_manage = None
         if "session_delete_confirmation_id" not in st.session_state:

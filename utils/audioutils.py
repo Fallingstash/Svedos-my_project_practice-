@@ -5,11 +5,14 @@ import librosa
 import numpy as np
 import pyloudnorm as pyln
 import streamlit as st
+import soundfile as sf
 from scipy.signal import find_peaks, resample_poly
 
 from utils.config import (
     INVALID_AUDIO_FILE_MESSAGE,
     INVALID_AUDIO_TYPE_MESSAGE,
+    MAX_AUDIO_DURATION_SECONDS,
+    MAX_AUDIO_DURATION_MESSAGE,
     MAX_UPLOAD_SIZE_BYTES,
     SUPPORTED_AUDIO_EXTENSIONS,
     UPLOAD_TOO_LARGE_MESSAGE,
@@ -49,6 +52,11 @@ def validate_audio_upload(uploaded_file):
         with TemporaryDirectory() as temporary_directory:
             temporary_path = Path(temporary_directory) / f"upload{extension}"
             temporary_path.write_bytes(file_buffer)
+            audio_info = sf.info(str(temporary_path))
+            if audio_info.frames <= 0 or audio_info.channels < 1:
+                return INVALID_AUDIO_FILE_MESSAGE
+            if audio_info.duration > MAX_AUDIO_DURATION_SECONDS:
+                return MAX_AUDIO_DURATION_MESSAGE
             audio, _ = librosa.load(
                 str(temporary_path),
                 sr=None,
@@ -260,13 +268,16 @@ def _phase_correlation(audio):
 
 def _short_term_lufs(mono_audio, sample_rate):
     window_size = LUFS_WINDOW_SECONDS * sample_rate
-    if len(mono_audio) < window_size * 2:
+    total_length = mono_audio.shape[-1] if mono_audio.ndim > 1 else len(mono_audio)
+    if total_length < window_size * 2:
         return None
 
     meter = pyln.Meter(sample_rate)
     measurements = [
-        meter.integrated_loudness(mono_audio[start : start + window_size])
-        for start in range(0, len(mono_audio) - window_size + 1, window_size)
+        meter.integrated_loudness(
+            _loudness_channel_shape(mono_audio[..., start : start + window_size])
+        )
+        for start in range(0, total_length - window_size + 1, window_size)
     ]
     finite_measurements = np.asarray(measurements, dtype=float)
     finite_measurements = finite_measurements[np.isfinite(finite_measurements)]
@@ -277,13 +288,16 @@ def _short_term_lufs(mono_audio, sample_rate):
 
 def _max_short_term_lufs(mono_audio, sample_rate):
     window_size = LUFS_WINDOW_SECONDS * sample_rate
-    if len(mono_audio) < window_size:
+    total_length = mono_audio.shape[-1] if mono_audio.ndim > 1 else len(mono_audio)
+    if total_length < window_size:
         return None
 
     meter = pyln.Meter(sample_rate)
     measurements = [
-        meter.integrated_loudness(mono_audio[start : start + window_size])
-        for start in range(0, len(mono_audio) - window_size + 1, sample_rate)
+        meter.integrated_loudness(
+            _loudness_channel_shape(mono_audio[..., start : start + window_size])
+        )
+        for start in range(0, total_length - window_size + 1, sample_rate)
     ]
     finite_measurements = [
         measurement for measurement in measurements if np.isfinite(measurement)
@@ -291,15 +305,35 @@ def _max_short_term_lufs(mono_audio, sample_rate):
     return max(finite_measurements) if finite_measurements else None
 
 
+def _loudness_channel_shape(audio):
+    if audio.ndim == 1:
+        return audio
+    if audio.shape[0] == 1:
+        return audio[0]
+    return np.moveaxis(audio, 0, -1)
+
+
+def _integrated_loudness(audio, sample_rate):
+    meter = pyln.Meter(sample_rate)
+    return meter.integrated_loudness(_loudness_channel_shape(audio))
+
+
 def _analyze_audio(audio, sample_rate, segments=()):
     source_audio = audio
     selected_audio, analysis_context = _prepare_audio(audio, sample_rate, segments)
     stereo_width_pct, stereo_width_db = _stereo_metrics(selected_audio)
-    mono_audio = librosa.to_mono(selected_audio) if selected_audio.ndim == 2 else selected_audio
+    if selected_audio.ndim == 2:
+        mono_audio = np.mean(selected_audio, axis=0)
+        channel_magnitudes = [
+            np.abs(librosa.stft(channel, n_fft=FFT_SIZE))
+            for channel in selected_audio
+        ]
+        magnitude = np.mean(channel_magnitudes, axis=0)
+    else:
+        mono_audio = selected_audio
+        magnitude = np.abs(librosa.stft(mono_audio, n_fft=FFT_SIZE))
     phase_correlation = _phase_correlation(selected_audio)
 
-    stft = librosa.stft(mono_audio, n_fft=FFT_SIZE)
-    magnitude = np.abs(stft)
     average_magnitude = np.mean(magnitude, axis=1)
     absolute_spectrum = librosa.amplitude_to_db(
         average_magnitude,
@@ -348,22 +382,30 @@ def _analyze_audio(audio, sample_rate, segments=()):
         )
     )
 
-    loudness = pyln.Meter(sample_rate).integrated_loudness(mono_audio)
-    sample_peak = float(np.max(np.abs(mono_audio)))
+    loudness = _integrated_loudness(selected_audio, sample_rate)
+    sample_peak = float(np.max(np.abs(selected_audio)))
     max_peak_db = 20 * np.log10(sample_peak) if sample_peak > 0 else float("-inf")
-    oversampled_audio = resample_poly(
-        mono_audio,
-        TRUE_PEAK_OVERSAMPLE,
-        1,
-    )
+    if selected_audio.ndim == 2:
+        oversampled_audio = resample_poly(
+            selected_audio,
+            TRUE_PEAK_OVERSAMPLE,
+            1,
+            axis=-1,
+        )
+    else:
+        oversampled_audio = resample_poly(
+            selected_audio,
+            TRUE_PEAK_OVERSAMPLE,
+            1,
+        )
     true_peak = float(np.max(np.abs(oversampled_audio)))
     true_peak_db = 20 * np.log10(true_peak) if true_peak > 0 else float("-inf")
-    rms = float(np.sqrt(np.mean(mono_audio**2)))
+    rms = float(np.sqrt(np.mean(selected_audio**2)))
     rms_db = 20 * np.log10(rms) if rms > 0 else float("-inf")
     crest_factor = max_peak_db - rms_db
     plr = true_peak_db - loudness if np.isfinite(loudness) else None
-    short_term_lufs_variance = _short_term_lufs(mono_audio, sample_rate)
-    max_short_term_lufs = _max_short_term_lufs(mono_audio, sample_rate)
+    short_term_lufs_variance = _short_term_lufs(selected_audio, sample_rate)
+    max_short_term_lufs = _max_short_term_lufs(selected_audio, sample_rate)
 
     dynamics_lines = [
         f"Интегральный LUFS (средний): {loudness:.1f}",
@@ -438,6 +480,14 @@ def _analyze_audio(audio, sample_rate, segments=()):
 @st.cache_data(show_spinner=False)
 def _analyze_audio_cached(file_path, file_size, modified_ns, segments):
     try:
+        audio_info = sf.info(file_path)
+    except Exception as error:
+        raise ValueError(INVALID_AUDIO_FILE_MESSAGE) from error
+    if audio_info.frames <= 0 or audio_info.channels < 1:
+        raise ValueError(INVALID_AUDIO_FILE_MESSAGE)
+    if audio_info.duration > MAX_AUDIO_DURATION_SECONDS:
+        raise ValueError(MAX_AUDIO_DURATION_MESSAGE)
+    try:
         audio, sample_rate = librosa.load(file_path, sr=None, mono=False)
     except Exception as error:
         raise ValueError(INVALID_AUDIO_FILE_MESSAGE) from error
@@ -446,7 +496,10 @@ def _analyze_audio_cached(file_path, file_size, modified_ns, segments):
 
 def analyze_audio_file(file_path, segments=()):
     resolved_path = str(Path(file_path).resolve())
-    file_stat = Path(resolved_path).stat()
+    try:
+        file_stat = Path(resolved_path).stat()
+    except OSError as error:
+        raise ValueError(INVALID_AUDIO_FILE_MESSAGE) from error
     segment_key = tuple(tuple(segment) for segment in segments)
     return _analyze_audio_cached(
         resolved_path,

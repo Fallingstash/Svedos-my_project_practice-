@@ -8,7 +8,9 @@ from openai import OpenAI
 from openai import OpenAIError
 
 from utils.config import (
+    AI_UNAVAILABLE_MESSAGE,
     MAX_AI_TOKENS,
+    MODEL,
     MODEL_FALLBACKS,
 )
 
@@ -153,10 +155,24 @@ def get_client():
 
 def get_chat_messages(system_prompt, user_prompt, chat_history=None):
     messages = [{"role": "system", "content": system_prompt}]
-    for message in (chat_history or [])[-6:]:
-        messages.append(
-            {"role": message["role"], "content": message["content"]}
+    selected_messages = []
+    remaining_chars = 12000
+    for message in reversed(chat_history or []):
+        content = str(message.get("content", ""))
+        if message.get("role") not in {"user", "assistant", "system"}:
+            continue
+        if len(content) > remaining_chars:
+            content = content[:remaining_chars]
+        if not content:
+            continue
+        selected_messages.append(
+            {"role": message["role"], "content": content}
         )
+        remaining_chars -= len(content)
+        if remaining_chars <= 0:
+            break
+    for message in reversed(selected_messages):
+        messages.append(message)
     messages.append({"role": "user", "content": user_prompt})
     return messages
 
@@ -228,12 +244,14 @@ Decay, Room Size и подобные. Вместо High Pass или Low Cut пи
 Строго опирайся на переданные пики, баланс частот, референс и сведения о стемах. Не придумывай
 частоты, которых нет в данных. Если конкретная проблемная частота не указана, говори только об
 общем диапазоне — низах, середине или верхах. Не выдавай предположения за то, что точно слышно.
+Переданные топ-пики называй «выраженными спектральными пиками или ориентирами»:
+они не доказывают резонанс или необходимость эквалайзера. Не рекомендуй коррекцию только по их наличию.
 Измерения используй только для собственного вывода: не перечисляй метрики, их значения и единицы.
 Переводи вывод в понятные слуховые ощущения — например, «бубнит», «глухо», «вата», «песок»,
 «не хватает воздуха», «плотно» или «теряется удар».
-Если фазовая корреляция ниже 0.2, предупреди: «Твои стерео-эффекты ломают фазу.
-В моно (на клубах или телефонах) звук может схлопнуться. Убери стерео-расширение
-с баса или проверь фазу на плагинах».
+Низкая фазовая корреляция может указывать на риск потерь при сведении в моно.
+Сообщи это осторожно и предложи прослушать трек в моно и проверить стерео-эффекты,
+если это соответствует замыслу. Не утверждай, что бас обязательно исчезнет.
 Если спектральный центроид очень низкий для жанра (ориентировочно ниже 1800 Гц),
 а пользователь не описывал мрачный вайб, предложи добавить немного воздуха через
 Fruity Parametric EQ 2: пологий подъём высоких частот примерно в области 10–12 кГц.
@@ -254,7 +272,8 @@ Fruity Parametric EQ 2: пологий подъём высоких частот 
 Если отдельные части заметно различаются по громкости, можешь предложить проверить
 автоматизацию громкости как возможный способ выровнять подачу.
 
-Сравни спектр с ориентировочной кривой жанра {genre_name}. Учитывай только полосы,
+Сравни спектр с приблизительным ручным ориентиром жанра {genre_name}. Явно не выдавай
+его за статистический стандарт жанра. Учитывай только полосы,
 где отклонение от неё превышает 3 дБ: если энергии заметно меньше ориентира, мягко
 предложи проверить добавление энергии в этой области; если больше — проверь, не
 перегружена ли область. Привязывай совет к полосе только если она указана в данных,
@@ -262,8 +281,8 @@ Fruity Parametric EQ 2: пологий подъём высоких частот 
 Не озвучивай пользователю численную разницу и не навязывай коррекцию, если она не нужна на слух.
 
 Уважение к индивидуальности (Artistic Exemption):
-Жанровая кривая — статистическое среднее, а не закон и не цель, к которой нужно
-подгонять трек. Само по себе отклонение от неё не является ошибкой. Не требуй менять
+Жанровая кривая — приблизительный ручной ориентир, а не статистический стандарт и не цель,
+к которой нужно подгонять трек. Само по себе отклонение от неё не является ошибкой. Не требуй менять
 темный, басовый, грязный или необычный тембр, если он не вызывает конкретную техническую
 проблему. Обращай внимание на такие проблемы только при наличии подтверждения данными:
 слова трудно разобрать из-за подтверждённого частотного конфликта (в мастер-треке не
@@ -362,7 +381,8 @@ def get_consolidation_prompt(genre_name):
 def request_ai_response(system_prompt, user_prompt, chat_history=None):
     client = get_client()
     messages = get_chat_messages(system_prompt, user_prompt, chat_history)
-    for model_name in MODEL_FALLBACKS:
+    last_error = None
+    for model_name in (MODEL, *MODEL_FALLBACKS):
         try:
             response = client.chat.completions.create(
                 model=model_name,
@@ -378,11 +398,14 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
                 type(error).__name__,
                 safe_details,
             )
-            raise AIRequestError(_format_api_failure(error)) from error
+            if status_code in (401, 402):
+                raise AIRequestError(_format_api_failure(error)) from error
+            last_error = error
+            continue
 
         if not response.choices:
             logger.error("OpenRouter returned no choices")
-            raise AIRequestError("OpenRouter вернул ответ без вариантов (choices).")
+            continue
 
         choice = response.choices[0]
         answer = choice.message.content
@@ -395,14 +418,10 @@ def request_ai_response(system_prompt, user_prompt, chat_history=None):
             model_name,
             choice.finish_reason,
         )
-        print(
-            f"DEBUG: Model {model_name} returned empty content. Trying next..."
-        )
     else:
-        return (
-            "Все модели ИИ временно перегружены. Пожалуйста, попробуйте "
-            "отправить сообщение еще раз через минуту. Ваш анализ сохранен."
-        )
+        if last_error is not None:
+            raise AIRequestError(_format_api_failure(last_error)) from last_error
+        raise AIRequestError(AI_UNAVAILABLE_MESSAGE)
 
     if choice.finish_reason == "length":
         logger.warning(

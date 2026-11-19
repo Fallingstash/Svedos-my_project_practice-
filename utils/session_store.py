@@ -1,18 +1,26 @@
 import hashlib
 import json
 import sqlite3
+import os
+import secrets
 from datetime import datetime
 from pathlib import Path
 from time import time
 
 from utils.config import RATE_LIMIT_SECONDS
 
-DATABASE_PATH = Path(__file__).resolve().parents[1] / "history" / "svedos.db"
+DATA_DIRECTORY = (
+    Path(os.environ["SVEDOS_DATA_DIR"]).expanduser().resolve()
+    if os.environ.get("SVEDOS_DATA_DIR")
+    else Path(__file__).resolve().parents[1]
+)
+DATA_DIRECTORY.mkdir(parents=True, exist_ok=True)
+DATABASE_PATH = DATA_DIRECTORY / "history" / "svedos.db"
 
 
 def _connect():
     DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DATABASE_PATH)
+    connection = sqlite3.connect(DATABASE_PATH, timeout=30)
     connection.row_factory = sqlite3.Row
     connection.execute(
         """
@@ -31,7 +39,10 @@ def _connect():
             vocal_path TEXT,
             segments_json TEXT NOT NULL,
             chat_history_json TEXT NOT NULL,
-            vibe_description TEXT NOT NULL DEFAULT ''
+            vibe_description TEXT NOT NULL DEFAULT '',
+            old_spectrum_json TEXT,
+            old_frequencies_json TEXT,
+            recovery_token_hash TEXT UNIQUE
         )
         """
     )
@@ -45,6 +56,9 @@ def _connect():
         ("beat_path", "TEXT"),
         ("vocal_path", "TEXT"),
         ("vibe_description", "TEXT NOT NULL DEFAULT ''"),
+        ("old_spectrum_json", "TEXT"),
+        ("old_frequencies_json", "TEXT"),
+        ("recovery_token_hash", "TEXT"),
     ):
         if column_name not in existing_columns:
             connection.execute(
@@ -61,6 +75,10 @@ def _connect():
         )
         """
     )
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_recovery_token_hash "
+        "ON sessions(recovery_token_hash)"
+    )
     connection.commit()
     return connection
 
@@ -74,9 +92,10 @@ def save_session(session):
             INSERT INTO sessions (
                 id, user_id, track_name, display_name, genre, created_at, updated_at,
                 track_path, reference_path, analysis_mode, beat_path, vocal_path,
-                segments_json, chat_history_json, vibe_description
+                segments_json, chat_history_json, vibe_description,
+                old_spectrum_json, old_frequencies_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 user_id = excluded.user_id,
                 track_name = excluded.track_name,
@@ -94,7 +113,9 @@ def save_session(session):
                 vocal_path = excluded.vocal_path,
                 segments_json = excluded.segments_json,
                 chat_history_json = excluded.chat_history_json,
-                vibe_description = excluded.vibe_description
+                vibe_description = excluded.vibe_description,
+                old_spectrum_json = excluded.old_spectrum_json,
+                old_frequencies_json = excluded.old_frequencies_json
             WHERE sessions.user_id = excluded.user_id
             """,
             (
@@ -113,6 +134,16 @@ def save_session(session):
                 json.dumps(session.get("segments", []), ensure_ascii=False),
                 json.dumps(session.get("chat_history", []), ensure_ascii=False),
                 session.get("vibe_description", ""),
+                (
+                    json.dumps(session["old_spectrum"])
+                    if session.get("old_spectrum") is not None
+                    else None
+                ),
+                (
+                    json.dumps(session["old_frequencies"])
+                    if session.get("old_frequencies") is not None
+                    else None
+                ),
             ),
         )
         if cursor.rowcount == 0:
@@ -213,19 +244,13 @@ def list_sessions(user_id):
     return sessions
 
 
-def _load_session(session_id, user_id=None):
+def _load_session(session_id, user_id):
     connection = _connect()
     try:
-        if user_id is None:
-            row = connection.execute(
-                "SELECT * FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        else:
-            row = connection.execute(
-                "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
-                (session_id, user_id),
-            ).fetchone()
+        row = connection.execute(
+            "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
     finally:
         connection.close()
 
@@ -248,6 +273,16 @@ def _load_session(session_id, user_id=None):
         "segments": json.loads(row["segments_json"]),
         "chat_history": json.loads(row["chat_history_json"]),
         "vibe_description": row["vibe_description"],
+        "old_spectrum": (
+            json.loads(row["old_spectrum_json"])
+            if row["old_spectrum_json"]
+            else None
+        ),
+        "old_frequencies": (
+            json.loads(row["old_frequencies_json"])
+            if row["old_frequencies_json"]
+            else None
+        ),
     }
 
 
@@ -255,8 +290,91 @@ def load_session(session_id, user_id):
     return _load_session(session_id, user_id)
 
 
-def load_session_for_resume(session_id):
-    return _load_session(session_id)
+def create_recovery_token(session_id, user_id):
+    connection = _connect()
+    try:
+        row = connection.execute(
+            "SELECT id FROM sessions WHERE id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Сессия не найдена.")
+
+        token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        connection.execute(
+            "UPDATE sessions SET recovery_token_hash = ? WHERE id = ?",
+            (token_hash, session_id),
+        )
+        connection.commit()
+        return token
+    finally:
+        connection.close()
+
+
+def load_session_for_recovery_token(token):
+    if not isinstance(token, str) or not token:
+        return None
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    connection = _connect()
+    try:
+        row = connection.execute(
+            "SELECT * FROM sessions WHERE recovery_token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "track_name": row["track_name"],
+        "display_name": row["display_name"] or row["track_name"],
+        "genre": row["genre"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "track_path": row["track_path"],
+        "reference_path": row["reference_path"],
+        "analysis_mode": row["analysis_mode"],
+        "beat_path": row["beat_path"],
+        "vocal_path": row["vocal_path"],
+        "segments": json.loads(row["segments_json"]),
+        "chat_history": json.loads(row["chat_history_json"]),
+        "vibe_description": row["vibe_description"],
+        "old_spectrum": (
+            json.loads(row["old_spectrum_json"])
+            if row["old_spectrum_json"]
+            else None
+        ),
+        "old_frequencies": (
+            json.loads(row["old_frequencies_json"])
+            if row["old_frequencies_json"]
+            else None
+        ),
+    }
+
+
+def save_session_for_recovery_token(token, session):
+    if not isinstance(token, str) or not token:
+        raise ValueError("Недействительная ссылка восстановления.")
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    connection = _connect()
+    try:
+        row = connection.execute(
+            "SELECT id, user_id FROM sessions WHERE recovery_token_hash = ?",
+            (token_hash,),
+        ).fetchone()
+    finally:
+        connection.close()
+    if row is None:
+        raise ValueError("Ссылка восстановления недействительна.")
+    if session["id"] != row["id"]:
+        raise ValueError("Токен не относится к этой сессии.")
+    owner_session = dict(session)
+    owner_session["user_id"] = row["user_id"]
+    return save_session(owner_session)
 
 
 def rename_session(session_id, user_id, display_name):
@@ -280,6 +398,16 @@ def rename_session(session_id, user_id, display_name):
 def delete_session(session_id, user_id):
     connection = _connect()
     try:
+        row = connection.execute(
+            """
+            SELECT track_path, reference_path, beat_path, vocal_path
+            FROM sessions WHERE id = ? AND user_id = ?
+            """,
+            (session_id, user_id),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Сессия не найдена.")
+
         connection.execute(
             "DELETE FROM message_feedback WHERE session_id = ? AND user_id = ?",
             (session_id, user_id),
@@ -293,6 +421,48 @@ def delete_session(session_id, user_id):
         connection.commit()
     finally:
         connection.close()
+
+    session_directories = {
+        (DATA_DIRECTORY / session_id).resolve(),
+        (DATA_DIRECTORY / "history" / session_id).resolve(),
+        (DATA_DIRECTORY.parent / "history" / session_id).resolve(),
+    }
+    protected_paths = set()
+    connection = _connect()
+    try:
+        remaining = connection.execute(
+            """
+            SELECT track_path, reference_path, beat_path, vocal_path
+            FROM sessions
+            """
+        ).fetchall()
+        for remaining_row in remaining:
+            for column in ("track_path", "reference_path", "beat_path", "vocal_path"):
+                path = remaining_row[column]
+                if path:
+                    protected_paths.add(str(Path(path).resolve()))
+    finally:
+        connection.close()
+
+    for column in ("track_path", "reference_path", "beat_path", "vocal_path"):
+        path_value = row[column]
+        if not path_value:
+            continue
+        try:
+            file_path = Path(path_value).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if str(file_path) in protected_paths:
+            continue
+        if not any(
+            file_path == directory or directory in file_path.parents
+            for directory in session_directories
+        ):
+            continue
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            continue
 
 
 def save_message_feedback(session_id, user_id, message_index, rating):

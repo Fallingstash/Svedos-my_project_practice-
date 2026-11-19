@@ -10,7 +10,7 @@ from utils.config import (
     INVALID_AUDIO_TYPE_MESSAGE,
     MAX_CHAT_MESSAGE_CHARS,
     MAX_UPLOAD_SIZE_BYTES,
-    MAX_USER_MESSAGES,
+    get_message_limit,
     MESSAGE_LIMIT_MESSAGE,
     MESSAGE_TOO_LONG_MESSAGE,
     RATE_LIMIT_MESSAGE,
@@ -29,9 +29,12 @@ from utils.audioutils import (
     get_genre_reference_delta,
 )
 from utils.session_store import (
+    DATA_DIRECTORY,
     allow_ai_request,
-    load_session_for_resume,
+    create_recovery_token,
+    load_session_for_recovery_token,
     save_session,
+    save_session_for_recovery_token,
 )
 from views.chat import render_chat
 from views.graph import render_graph
@@ -70,6 +73,8 @@ SESSION_DEFAULTS = {
     "chat_upload_generation": 0,
     "sessionto_manage": None,
     "session_delete_confirmation_id": None,
+    "recovery_mode": False,
+    "recovery_token": None,
 }
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -117,7 +122,7 @@ def save_versioned_upload(uploaded_file, prefix):
             datetime.now().astimezone().isoformat(timespec="seconds")
         )
     session_directory = (
-        Path(__file__).resolve().parent
+        DATA_DIRECTORY
         / "history"
         / st.session_state.session_id
     )
@@ -133,39 +138,69 @@ def persist_current_session():
     if not st.session_state.session_id or not st.session_state.file_path:
         return
     st.query_params["sessionid"] = st.session_state.session_id
-    save_session(
-        {
-            "id": st.session_state.session_id,
-            "user_id": st.session_state.user_id,
-            "track_name": st.session_state.track_name,
-            "display_name": st.session_state.display_name or st.session_state.track_name,
-            "genre": st.session_state.genre,
-            "vibe_description": st.session_state.vibe_description,
-            "created_at": st.session_state.session_created_at,
-            "track_path": st.session_state.file_path,
-            "reference_path": st.session_state.ref_path,
-            "analysis_mode": st.session_state.analysis_mode,
-            "beat_path": st.session_state.beat_path,
-            "vocal_path": st.session_state.vocal_path,
-            "segments": st.session_state.segments,
-            "chat_history": st.session_state.chat_history,
-        }
-    )
+    session_data = {
+        "id": st.session_state.session_id,
+        "user_id": st.session_state.user_id,
+        "track_name": st.session_state.track_name,
+        "display_name": st.session_state.display_name or st.session_state.track_name,
+        "genre": st.session_state.genre,
+        "vibe_description": st.session_state.vibe_description,
+        "created_at": st.session_state.session_created_at,
+        "track_path": st.session_state.file_path,
+        "reference_path": st.session_state.ref_path,
+        "analysis_mode": st.session_state.analysis_mode,
+        "beat_path": st.session_state.beat_path,
+        "vocal_path": st.session_state.vocal_path,
+        "segments": st.session_state.segments,
+        "chat_history": st.session_state.chat_history,
+        "old_spectrum": (
+            st.session_state.old_spectrum.tolist()
+            if st.session_state.old_spectrum is not None
+            else None
+        ),
+        "old_frequencies": (
+            st.session_state.old_frequencies.tolist()
+            if st.session_state.old_frequencies is not None
+            else None
+        ),
+    }
+    if st.session_state.recovery_mode:
+        save_session_for_recovery_token(
+            st.session_state.recovery_token,
+            session_data,
+        )
+    else:
+        save_session(session_data)
+    if not st.session_state.recovery_mode and not st.session_state.recovery_token:
+        st.session_state.recovery_token = create_recovery_token(
+            st.session_state.session_id,
+            st.session_state.user_id,
+        )
+    st.query_params["restore"] = st.session_state.recovery_token
 
 
 def restore_session_from_url():
-    session_id = st.query_params.get("sessionid")
-    if not session_id or st.session_state.session_id:
-        return
-
-    session = load_session_for_resume(session_id)
-    if session is None or not session["user_id"]:
-        st.error("Не удалось восстановить сессию из ссылки.")
+    recovery_token = st.query_params.get("restore")
+    if not recovery_token:
         if "sessionid" in st.query_params:
             del st.query_params["sessionid"]
+            st.error(
+                "Старая ссылка восстановления больше не поддерживается. "
+                "Откройте сессию заново из истории."
+            )
         return
 
-    st.session_state.user_id = session["user_id"]
+    if st.session_state.session_id:
+        return
+
+    session = load_session_for_recovery_token(recovery_token)
+    if session is None or not session["user_id"]:
+        st.error("Не удалось восстановить сессию из ссылки.")
+        for parameter in ("restore", "sessionid"):
+            if parameter in st.query_params:
+                del st.query_params[parameter]
+        return
+
     st.session_state.session_id = session["id"]
     st.session_state.track_name = session["track_name"]
     st.session_state.display_name = session["display_name"]
@@ -181,6 +216,10 @@ def restore_session_from_url():
     st.session_state.vocal_path = session["vocal_path"]
     st.session_state.segments = session["segments"]
     st.session_state.chat_history = session["chat_history"]
+    st.session_state.old_spectrum = session["old_spectrum"]
+    st.session_state.old_frequencies = session["old_frequencies"]
+    st.session_state.recovery_mode = True
+    st.session_state.recovery_token = recovery_token
     st.session_state.attachedmetrics = []
     st.session_state.analyzed = True
     st.session_state.pendingai_request = False
@@ -194,8 +233,21 @@ def get_reference_data():
     if not reference_path:
         return None
     if not Path(reference_path).is_file():
-        raise ValueError("Файл референса из этой сессии не найден.")
-    return analyze_audio_file(reference_path)
+        st.warning(
+            "Файл референса не найден; анализ основного трека продолжен без него."
+        )
+        st.session_state.ref_path = None
+        persist_current_session()
+        return None
+    try:
+        return analyze_audio_file(reference_path)
+    except ValueError as error:
+        st.warning(
+            f"Референс не удалось прочитать; анализ продолжен без него. {error}"
+        )
+        st.session_state.ref_path = None
+        persist_current_session()
+        return None
 
 
 def analyze_current_source():
@@ -348,6 +400,7 @@ def process_pending_ai_request(payload):
         )
         st.session_state.old_spectrum = previous_audio["spectrum"]
         st.session_state.old_frequencies = previous_audio["frequencies"]
+        persist_current_session()
 
     st.caption("Считаю частоты...")
     audio_data, stem_data = analyze_current_source()
@@ -396,7 +449,8 @@ def queue_ai_request(
         message["role"] == "user"
         for message in st.session_state.chat_history
     )
-    if message_count >= MAX_USER_MESSAGES:
+    message_limit = get_message_limit()
+    if message_count >= message_limit:
         st.session_state.pendingai_error = MESSAGE_LIMIT_MESSAGE
         st.session_state.view_mode = "chat"
         return False
@@ -409,7 +463,6 @@ def queue_ai_request(
         st.session_state.view_mode = "chat"
         return False
 
-    st.session_state.chat_history.append({"role": "user", "content": question})
     st.session_state.pendingai_payload = {
         "kind": kind,
         "question": question,
@@ -536,6 +589,31 @@ else:
                 and settings_result["action"] == "apply"
                 and not st.session_state.pendingai_request
             ):
+                selected_mode = settings_result["analysis_mode"]
+                if selected_mode == "master":
+                    has_master = settings_result["track"] is not None or (
+                        st.session_state.analysis_mode == "master"
+                        and st.session_state.file_path
+                        and Path(st.session_state.file_path).is_file()
+                    )
+                    if not has_master:
+                        st.error("Для режима мастер-трека загрузи мастер-трек.")
+                        st.stop()
+                else:
+                    has_beat = settings_result["beat"] is not None or (
+                        st.session_state.analysis_mode == "stems"
+                        and st.session_state.beat_path
+                        and Path(st.session_state.beat_path).is_file()
+                    )
+                    has_vocal = settings_result["vocal"] is not None or (
+                        st.session_state.analysis_mode == "stems"
+                        and st.session_state.vocal_path
+                        and Path(st.session_state.vocal_path).is_file()
+                    )
+                    if not has_beat or not has_vocal:
+                        st.error("Для режима стемов загрузи и бит, и вокал.")
+                        st.stop()
+
                 st.session_state.vibe_description = settings_result[
                     "vibe_description"
                 ]
@@ -578,6 +656,9 @@ else:
                         "vocal",
                     )
                 st.session_state.analysis_mode = settings_result["analysis_mode"]
+                if st.session_state.analysis_mode == "stems":
+                    st.session_state.file_path = st.session_state.beat_path
+                persist_current_session()
                 previous_track_for_graph = (
                     old_track_path
                     if (
@@ -604,25 +685,13 @@ else:
                     update_question += (
                         " Оцени, что изменилось и что попробовать дальше."
                     )
-                if st.session_state.analysis_mode == "stems":
-                    if not st.session_state.beat_path or not st.session_state.vocal_path:
-                        st.error("Для режима стемов загрузи и бит, и вокал.")
-                    else:
-                        queue_ai_request(
-                            update_question,
-                            "settings",
-                            previous_track_for_graph,
-                            new_version_uploaded,
-                        )
-                        st.rerun()
-                else:
-                    queue_ai_request(
-                        update_question,
-                        "settings",
-                        previous_track_for_graph,
-                        new_version_uploaded,
-                    )
-                    st.rerun()
+                queue_ai_request(
+                    update_question,
+                    "settings",
+                    previous_track_for_graph,
+                    new_version_uploaded,
+                )
+                st.rerun()
         else:
             chat_result = render_chat(
                 st.session_state.chat_history,

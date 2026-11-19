@@ -7,10 +7,3 @@ pyloudnorm
 openai
 python-dotenv
 streamlit
-librosa
-numpy
-scipy
-matplotlib
-pyloudnorm
-openai
-python-dotenv
