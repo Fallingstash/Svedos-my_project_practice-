@@ -45,7 +45,7 @@ from utils.guest_identity import (
     COOKIE_NAME,
     get_guest_cookie_secret,
     sign_guest_id,
-    resolve_guest_identity,
+    resolve_guest_identitys,
 )
 from utils.config import validate_storage_configuration
 from utils.storage import (
