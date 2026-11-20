@@ -43,10 +43,9 @@ from utils.session_store import (
 from utils.guest_identity import (
     COOKIE_MAX_AGE_SECONDS,
     COOKIE_NAME,
-    create_guest_id,
     get_guest_cookie_secret,
     sign_guest_id,
-    verify_signed_guest_id,
+    resolve_guest_identity,
 )
 from utils.config import validate_storage_configuration
 from utils.storage import (
@@ -110,6 +109,7 @@ SESSION_DEFAULTS = {
     "audio_runtime_cache": {},
     "audio_temp_dir": None,
 }
+_COOKIE_MANAGER_LOADING = {"__svedos_cookie_manager_loading__": True}
 for key, default in SESSION_DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = (
@@ -135,11 +135,33 @@ if not st.session_state.user_id:
     except RuntimeError as error:
         st.error(str(error))
         st.stop()
+    cookie_manager = stx.CookieManager(key="svedos_cookie_manager")
     signed_cookie = st.context.cookies.get(COOKIE_NAME)
-    guest_id = verify_signed_guest_id(signed_cookie, guest_secret)
+    component_cookies = cookie_manager.cookie_manager(
+        method="getAll",
+        key="svedos_guest_identity_probe",
+        default=_COOKIE_MANAGER_LOADING,
+    )
+    component_ready = (
+        isinstance(component_cookies, dict)
+        and component_cookies != _COOKIE_MANAGER_LOADING
+    )
+    component_cookie = (
+        component_cookies.get(COOKIE_NAME)
+        if component_ready
+        else None
+    )
+    guest_id, identity_source = resolve_guest_identity(
+        signed_cookie,
+        component_cookie,
+        component_ready,
+        guest_secret,
+    )
     if guest_id is None:
-        guest_id = create_guest_id()
-        stx.CookieManager(key="svedos_cookie_manager").set(
+        st.info("Восстанавливаем гостевую сессию…")
+        st.stop()
+    if identity_source == "created":
+        cookie_manager.set(
             COOKIE_NAME,
             sign_guest_id(guest_id, guest_secret),
             max_age=COOKIE_MAX_AGE_SECONDS,

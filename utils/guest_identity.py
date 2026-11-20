@@ -57,5 +57,25 @@ def verify_signed_guest_id(signed_value, secret):
     return guest_id
 
 
+def resolve_guest_identity(
+    request_cookie,
+    component_cookie,
+    component_ready,
+    secret,
+):
+    request_guest_id = verify_signed_guest_id(request_cookie, secret)
+    if request_guest_id:
+        return request_guest_id, "request"
+
+    if not component_ready:
+        return None, "loading"
+
+    component_guest_id = verify_signed_guest_id(component_cookie, secret)
+    if component_guest_id:
+        return component_guest_id, "component"
+
+    return create_guest_id(), "created"
+
+
 def create_guest_id():
     return str(uuid4())
